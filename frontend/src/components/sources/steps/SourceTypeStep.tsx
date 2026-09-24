@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { Control, FieldErrors, UseFormRegister, UseFormSetValue, useWatch } from "react-hook-form"
-import { FileIcon, LinkIcon, FileTextIcon } from "lucide-react"
+import { FileIcon, LinkIcon, FileTextIcon, FolderInputIcon } from "lucide-react"
 import { useTranslation } from "@/lib/hooks/use-translation"
 import { FormSection } from "@/components/ui/form-section"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -13,11 +13,13 @@ import { Badge } from "@/components/ui/badge"
 import { Controller } from "react-hook-form"
 
 interface CreateSourceFormData {
-  type: 'link' | 'upload' | 'text'
+  type: 'link' | 'upload' | 'text' | 'folder'
   title?: string
   url?: string
   content?: string
   file?: FileList | File
+  folder_path?: string
+  recursive?: boolean
   notebooks?: string[]
   transformations?: string[]
   embed: boolean
@@ -83,6 +85,12 @@ const getSourceTypes = (t: TFunction) => [
     label: t('sources.enterText'),
     icon: FileTextIcon,
     description: t('sources.processDescription'),
+  },
+  {
+    value: 'folder' as const,
+    label: t('sources.importFolder'),
+    icon: FolderInputIcon,
+    description: t('sources.importFolderDescription'),
   },
 ]
 
@@ -165,10 +173,10 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
           render={({ field }) => (
             <Tabs 
               value={field.value || ''} 
-              onValueChange={(value) => field.onChange(value as 'link' | 'upload' | 'text')}
+              onValueChange={(value) => field.onChange(value as 'link' | 'upload' | 'text' | 'folder')}
               className="w-full"
             >
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-4">
                 {getSourceTypes(t).map((type) => {
                   const Icon = type.icon
                   return (
@@ -301,6 +309,37 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
                       {errors.content && (
                         <p className="text-sm text-destructive mt-1">{errors.content.message}</p>
                       )}
+                    </div>
+                  )}
+
+                  {type.value === 'folder' && (
+                    <div className="space-y-3">
+                      <Label htmlFor="folder-path">{t('sources.folderPathLabel')}</Label>
+                      <Input
+                        id="folder-path"
+                        {...register('folder_path')}
+                        placeholder={t('sources.folderPathPlaceholder')}
+                        className="font-mono text-sm"
+                        autoComplete="off"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('sources.folderPathHint')}
+                      </p>
+                      {errors.folder_path && (
+                        <p className="text-sm text-destructive mt-1">{errors.folder_path.message}</p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="recursive"
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-border accent-[var(--accent)]"
+                          {...register('recursive')}
+                          defaultChecked
+                        />
+                        <Label htmlFor="recursive" className="text-sm font-normal">
+                          {t('sources.recursiveLabel')}
+                        </Label>
+                      </div>
                     </div>
                   )}
                 </TabsContent>

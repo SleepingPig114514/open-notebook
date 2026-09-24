@@ -170,6 +170,11 @@ class DefaultModels(RecordModel):
     # default_vision_model: Optional[str]
     default_embedding_model: Optional[str] = None
     default_tools_model: Optional[str] = None
+    # Per-slot reasoning (thinking) level for language slots. Keys are the
+    # model-field names above; values are "off"/"low"/"medium"/"xhigh"
+    # (absent = follow the provider default). Request-level parameter, not a
+    # model property — see open_notebook/ai/thinking.py.
+    model_args: Optional[Dict[str, str]] = None
 
     @classmethod
     async def get_instance(cls) -> "DefaultModels":

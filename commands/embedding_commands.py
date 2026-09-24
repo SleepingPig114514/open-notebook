@@ -18,7 +18,12 @@ from open_notebook.database.repository import ensure_record_id, repo_insert, rep
 from open_notebook.domain.notebook import Note, Source, SourceInsight
 from open_notebook.exceptions import ConfigurationError, ContextLengthExceededError
 from open_notebook.utils.chunking import ContentType, chunk_text, detect_content_type
-from open_notebook.utils.embedding import generate_embedding, generate_embeddings
+from open_notebook.utils.embedding import (
+    EmbeddingCancelledError,
+    command_cancel_requested,
+    generate_embedding,
+    generate_embeddings,
+)
 
 # NOTE: `stop_on` below can never trigger in practice — each command catches
 # ValueError internally and returns success=False instead of raising, so the
@@ -33,7 +38,8 @@ EMBED_RETRY_CONFIG = {
         ValueError,
         ConfigurationError,
         ContextLengthExceededError,
-    ],  # Don't retry validation/config errors
+        EmbeddingCancelledError,
+    ],  # Don't retry validation/config errors, nor user cancellations
     "retry_log_level": "warning",
 }
 
@@ -136,7 +142,7 @@ async def _embed_markdown_record(
 
 
 class RebuildEmbeddingsInput(CommandInput):
-    mode: Literal["existing", "all"]
+    mode: Literal["existing", "all", "missing"]
     include_sources: bool = True
     include_notes: bool = True
     include_insights: bool = True
@@ -324,6 +330,14 @@ async def embed_source_command(input_data: EmbedSourceInput) -> EmbedSourceOutpu
     """
 
     async def embed() -> Tuple[Dict[str, Any], str]:
+        # 0. Early cooperative-cancel check: a queued job the user stopped
+        # must not wipe the existing embeddings before doing any work.
+        cmd_id = get_command_id(input_data)
+        if await command_cancel_requested(cmd_id):
+            raise EmbeddingCancelledError(
+                f"Embedding cancelled by user before start (command: {cmd_id})"
+            )
+
         # 1. Load source
         source = await Source.get(input_data.source_id)
         if not source:
@@ -530,6 +544,19 @@ async def collect_items_for_rebuild(
                 items["sources"] = [str(item) for item in result]
             else:
                 items["sources"] = []
+        elif mode == "missing":
+            # Sources that have text but no embedding chunks at all
+            # (failed or skipped embed_source jobs)
+            result = await repo_query(
+                """
+                SELECT id FROM source
+                WHERE full_text != none AND string::trim(full_text) != ''
+                AND count(
+                    SELECT id FROM source_embedding WHERE source = $parent.id
+                ) = 0
+                """
+            )
+            items["sources"] = [str(item["id"]) for item in result] if result else []
         else:  # mode == "all"
             # Query all sources with non-empty content
             result = await repo_query(
@@ -545,6 +572,11 @@ async def collect_items_for_rebuild(
             result = await repo_query(
                 "SELECT id FROM note WHERE embedding != none AND array::len(embedding) > 0"
             )
+        elif mode == "missing":
+            # Notes with content but no embedding (failed embed_note jobs)
+            result = await repo_query(
+                "SELECT id FROM note WHERE content != none AND string::trim(content) != '' AND (embedding = none OR array::len(embedding) = 0)"
+            )
         else:  # mode == "all"
             # Query all notes with non-empty content
             result = await repo_query(
@@ -559,6 +591,11 @@ async def collect_items_for_rebuild(
             # Query insights with embeddings
             result = await repo_query(
                 "SELECT id FROM source_insight WHERE embedding != none AND array::len(embedding) > 0"
+            )
+        elif mode == "missing":
+            # Insights with content but no embedding (failed embed_insight jobs)
+            result = await repo_query(
+                "SELECT id FROM source_insight WHERE content != none AND string::trim(content) != '' AND (embedding = none OR array::len(embedding) = 0)"
             )
         else:  # mode == "all"
             # Query all insights with non-empty content

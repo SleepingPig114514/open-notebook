@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from surreal_commands import submit_command
 from surrealdb import RecordID
 
+from open_notebook.config import UPLOADS_FOLDER
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.base import ObjectModel
 from open_notebook.exceptions import (
@@ -645,10 +646,25 @@ class Source(ObjectModel):
 
     async def delete(self) -> bool:
         """Delete source and clean up associated file, embeddings, and insights."""
-        # Clean up uploaded file if it exists
+        # Clean up the file ONLY when it is an uploads-folder copy we manage.
+        # Folder imports point asset.file_path at the user's original file in
+        # place; deleting a source must never delete that external file
+        # (os.unlink bypasses the Recycle Bin entirely).
         if self.asset and self.asset.file_path:
             file_path = Path(self.asset.file_path)
-            if file_path.exists():
+            uploads_root = Path(UPLOADS_FOLDER).resolve()
+            is_managed_upload = False
+            try:
+                is_managed_upload = file_path.resolve().is_relative_to(uploads_root)
+            except ValueError:
+                is_managed_upload = False
+
+            if not is_managed_upload:
+                logger.info(
+                    f"Skipping physical deletion of external file for source "
+                    f"{self.id}: {file_path} (not in uploads folder)"
+                )
+            elif file_path.exists():
                 try:
                     os.unlink(file_path)
                     logger.info(f"Deleted file for source {self.id}: {file_path}")
@@ -753,9 +769,13 @@ class Note(ObjectModel):
 
 class ChatSession(ObjectModel):
     table_name: ClassVar[str] = "chat_session"
-    nullable_fields: ClassVar[set[str]] = {"model_override"}
+    nullable_fields: ClassVar[set[str]] = {"model_override", "reasoning_level"}
     title: Optional[str] = None
     model_override: Optional[str] = None
+    # Per-session reasoning (thinking) level for the (overridden or default)
+    # chat model. None = fall back to the chat slot level. chat_session is
+    # SCHEMALESS, so no migration is required.
+    reasoning_level: Optional[str] = None
 
     async def relate_to_notebook(self, notebook_id: str) -> Any:
         if not notebook_id:

@@ -8,13 +8,16 @@ from open_notebook.domain.base import ObjectModel, RecordModel
 
 class Transformation(ObjectModel):
     table_name: ClassVar[str] = "transformation"
-    nullable_fields: ClassVar[set[str]] = {"model_id"}
+    nullable_fields: ClassVar[set[str]] = {"model_id", "reasoning_level"}
     name: str
     title: str
     description: str
     prompt: str
     apply_default: bool
     model_id: Optional[str] = None
+    # Per-transformation reasoning (thinking) level: off/low/medium/xhigh.
+    # None = fall back to the transformation default-model slot level.
+    reasoning_level: Optional[str] = None
 
     def _prepare_save_data(self) -> Dict[str, Any]:
         data = super()._prepare_save_data()

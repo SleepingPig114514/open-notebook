@@ -1,5 +1,6 @@
 import operator
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from content_core import ContentCoreConfig, extract_content
@@ -184,16 +185,32 @@ async def content_process(state: SourceState) -> dict:
         )
 
     # content-core 2.x no longer deletes the uploaded source file after
-    # extraction (the delete_source flag it used to honor is gone). Preserve the
-    # previous auto-delete behavior on our side.
+    # extraction (the delete_source flag it used to honor is gone). Preserve
+    # the previous auto-delete behavior on our side, but ONLY for files we
+    # manage inside the uploads folder — never an external original file.
     if content_state.get("delete_source") and content_state.get("file_path"):
         file_path = content_state["file_path"]
+        from open_notebook.config import UPLOADS_FOLDER
+
+        can_delete = False
         try:
-            os.unlink(file_path)
-        except FileNotFoundError:
-            logger.warning(f"File not found while trying to delete: {file_path}")
-        except Exception as e:
-            logger.warning(f"Failed to delete source file {file_path}: {e}")
+            can_delete = Path(file_path).resolve().is_relative_to(
+                Path(UPLOADS_FOLDER).resolve()
+            )
+        except ValueError:
+            can_delete = False
+        if not can_delete:
+            logger.warning(
+                f"Refusing to delete external file even though delete_source "
+                f"was requested: {file_path}"
+            )
+        else:
+            try:
+                os.unlink(file_path)
+            except FileNotFoundError:
+                logger.warning(f"File not found while trying to delete: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete source file {file_path}: {e}")
 
     return {"extraction": processed}
 
@@ -266,7 +283,10 @@ async def transform_content(state: TransformationState) -> Optional[dict]:
     # overloads require the full state type (langgraph typing limitation).
     result = await transform_graph.ainvoke(  # type: ignore[call-overload]
         dict(input_text=content, transformation=transformation),
-        config=RunnableConfig(configurable={"model_id": transformation.model_id}),
+        config=RunnableConfig(configurable={
+            "model_id": transformation.model_id,
+            "reasoning_level": getattr(transformation, "reasoning_level", None),
+        }),
     )
     await source.add_insight(transformation.title, result["output"])
     return {

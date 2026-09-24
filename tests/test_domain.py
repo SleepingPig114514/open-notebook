@@ -286,9 +286,15 @@ class TestSourceDomain:
 
     @pytest.mark.asyncio
     async def test_source_delete_cleans_up_file(self):
-        """Test that deleting a source removes the associated file."""
-        # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp_file:
+        """Deleting a source removes an uploads-folder file it manages."""
+        from open_notebook.config import UPLOADS_FOLDER
+
+        uploads_dir = Path(UPLOADS_FOLDER)
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        # File lives INSIDE the uploads folder -> deletion is allowed.
+        with tempfile.NamedTemporaryFile(
+            dir=str(uploads_dir), delete=False, suffix=".txt"
+        ) as tmp_file:
             tmp_file.write(b"Test content")
             tmp_path = Path(tmp_file.name)
 
@@ -321,6 +327,36 @@ class TestSourceDomain:
 
         finally:
             # Cleanup in case test fails
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+    @pytest.mark.asyncio
+    async def test_source_delete_preserves_external_file(self):
+        """The deletion guard: files outside the uploads folder survive."""
+        from open_notebook.config import UPLOADS_FOLDER
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp_file:
+            tmp_file.write(b"Test content")
+            tmp_path = Path(tmp_file.name)
+        assert not tmp_path.resolve().is_relative_to(Path(UPLOADS_FOLDER).resolve())
+
+        try:
+            source = Source(
+                id="source:test_delete_external",
+                title="Test Source",
+                asset=Asset(file_path=str(tmp_path)),
+            )
+            with patch.object(
+                Source.__bases__[0], "delete", new_callable=AsyncMock
+            ) as mock_delete:
+                mock_delete.return_value = True
+                result = await source.delete()
+                mock_delete.assert_called_once()
+                assert result is True
+
+            # External original file must NOT be touched (folder-import guard).
+            assert tmp_path.exists()
+        finally:
             if tmp_path.exists():
                 tmp_path.unlink()
 

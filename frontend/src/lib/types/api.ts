@@ -36,6 +36,9 @@ export interface SourceListResponse {
   command_id?: string
   status?: string
   processing_info?: Record<string, unknown>
+  // Vectorization job activity (embed_source command in new/running state)
+  embedding_active?: boolean
+  embedding_cancel_requested?: boolean
 }
 
 export interface SourceDetailResponse extends SourceListResponse {
@@ -120,6 +123,28 @@ export interface CreateSourceRequest {
   async_processing?: boolean
 }
 
+export interface FolderImportRequest {
+  path: string
+  notebooks?: string[]
+  embed?: boolean
+  recursive?: boolean
+}
+
+export interface FolderImportResponse {
+  folder: string
+  added: number
+  updated: number
+  deleted: number
+  unchanged: number
+  unsupported: number
+  details: {
+    added: string[]
+    updated: string[]
+    deleted: string[]
+    unsupported: string[]
+  }
+}
+
 export interface UpdateNoteRequest {
   title?: string
   content?: string
@@ -146,11 +171,13 @@ export interface BaseChatSession {
   updated: string
   message_count?: number
   model_override?: string | null
+  reasoning_level?: string | null
 }
 
 export interface SourceChatSession extends BaseChatSession {
   source_id: string
   model_override?: string
+  reasoning_level?: string | null
 }
 
 export interface SourceChatMessage {
@@ -175,16 +202,19 @@ export interface CreateSourceChatSessionRequest {
   source_id: string
   title?: string
   model_override?: string
+  reasoning_level?: string
 }
 
 export interface UpdateSourceChatSessionRequest {
   title?: string
   model_override?: string
+  reasoning_level?: string | null
 }
 
 export interface SendMessageRequest {
   message: string
   model_override?: string
+  reasoning_level?: string
 }
 
 export interface SourceChatStreamEvent {
@@ -215,11 +245,13 @@ export interface CreateNotebookChatSessionRequest {
   notebook_id: string
   title?: string
   model_override?: string
+  reasoning_level?: string
 }
 
 export interface UpdateNotebookChatSessionRequest {
   title?: string
   model_override?: string | null
+  reasoning_level?: string | null
 }
 
 export interface SendNotebookChatMessageRequest {
@@ -230,6 +262,7 @@ export interface SendNotebookChatMessageRequest {
     notes: Array<Record<string, unknown>>
   }
   model_override?: string
+  reasoning_level?: string
 }
 
 export interface BuildContextRequest {

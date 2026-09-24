@@ -12,6 +12,10 @@ interface AskModels {
   strategy: string
   answer: string
   finalAnswer: string
+  /** Optional per-stage reasoning (thinking) levels; null/undefined = follow slot default. */
+  strategyReasoning?: string | null
+  answerReasoning?: string | null
+  finalAnswerReasoning?: string | null
 }
 
 interface AskOptions {
@@ -142,6 +146,9 @@ export function useAsk() {
         strategy_model: models.strategy,
         answer_model: models.answer,
         final_answer_model: models.finalAnswer,
+        ...(models.strategyReasoning ? { strategy_reasoning_level: models.strategyReasoning } : {}),
+        ...(models.answerReasoning ? { answer_reasoning_level: models.answerReasoning } : {}),
+        ...(models.finalAnswerReasoning ? { final_answer_reasoning_level: models.finalAnswerReasoning } : {}),
         ...(options.notebookIds && options.notebookIds.length > 0
           ? { notebook_ids: options.notebookIds }
           : {})

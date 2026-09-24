@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { useDebounce } from 'use-debounce'
 import { Search, Link2, LoaderIcon, FileText, Link as LinkIcon, Upload } from 'lucide-react'
 import {
   Dialog,
@@ -16,7 +15,6 @@ import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { searchApi } from '@/lib/api/search'
 import { sourcesApi } from '@/lib/api/sources'
 import { useSources, useAddSourcesToNotebook } from '@/lib/hooks/use-sources'
 import { SourceListResponse } from '@/lib/types/api'
@@ -29,6 +27,8 @@ interface AddExistingSourceDialogProps {
   onSuccess?: () => void
 }
 
+const PAGE_SIZE = 100
+
 export function AddExistingSourceDialog({
   open,
   onOpenChange,
@@ -37,13 +37,12 @@ export function AddExistingSourceDialog({
 }: AddExistingSourceDialogProps) {
   const { t } = useTranslation()
   const [searchQuery, setSearchQuery] = useState('')
-  const [debouncedSearchQuery] = useDebounce(searchQuery, 300)
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([])
   const [allSources, setAllSources] = useState<SourceListResponse[]>([])
-  const [filteredSources, setFilteredSources] = useState<SourceListResponse[]>([])
-  const [isSearching, setIsSearching] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [truncated, setTruncated] = useState(false)
 
-  // Get sources already in this notebook
+  // Sources already linked to this notebook
   const { data: currentNotebookSources } = useSources(notebookId)
   const currentSourceIds = useMemo(
     () => new Set(currentNotebookSources?.map(s => s.id) || []),
@@ -52,96 +51,86 @@ export function AddExistingSourceDialog({
 
   const addSources = useAddSourcesToNotebook()
 
+  // Load every source; the API returns at most 100 per page, so paginate.
   const loadAllSources = useCallback(async () => {
     try {
-      setIsSearching(true)
-      // Use sources API directly to get all sources (max 100 per API limit)
-      const sources = await sourcesApi.list({
-        limit: 100,
-        offset: 0,
-        sort_by: 'created',
-        sort_order: 'desc',
-      })
-
-      setAllSources(sources)
-      setFilteredSources(sources)
+      setIsLoading(true)
+      const collected: SourceListResponse[] = []
+      let offset = 0
+      for (let page = 0; page < 50; page++) {
+        const batch = await sourcesApi.list({
+          limit: PAGE_SIZE,
+          offset,
+          sort_by: 'created',
+          sort_order: 'desc',
+        })
+        collected.push(...batch)
+        offset += batch.length
+        if (batch.length < PAGE_SIZE) break
+      }
+      setTruncated(collected.length >= 50 * PAGE_SIZE)
+      setAllSources(collected)
     } catch (error) {
       console.error('Error loading sources:', error)
     } finally {
-      setIsSearching(false)
+      setIsLoading(false)
     }
   }, [])
 
-  const performSearch = useCallback(async () => {
-    if (!debouncedSearchQuery.trim()) {
-      // Empty query - show all sources
-      setFilteredSources(allSources)
-      setIsSearching(false)
-      return
-    }
-
-    try {
-      setIsSearching(true)
-      const response = await searchApi.search({
-        query: debouncedSearchQuery,
-        type: 'text',
-        search_sources: true,
-        search_notes: false,
-        limit: 100,
-        minimum_score: 0.01,
-      })
-
-      const sourceIds = new Set<string>()
-      const sources = response.results.filter(r => {
-        if (sourceIds.has(r.parent_id)) return false
-        sourceIds.add(r.parent_id)
-        return true
-      }).map(r => ({
-        id: r.parent_id,
-        title: r.title || 'Untitled',
-        topics: [],
-        asset: null,
-        embedded: false,
-        embedded_chunks: 0,
-        insights_count: 0,
-        created: r.created,
-        updated: r.updated,
-      })) as SourceListResponse[]
-
-      setFilteredSources(sources)
-    } catch (error) {
-      console.error('Error searching sources:', error)
-      // On error, fall back to showing all sources
-      setFilteredSources(allSources)
-    } finally {
-      setIsSearching(false)
-    }
-  }, [debouncedSearchQuery, allSources])
-
-  // Load all sources initially
   useEffect(() => {
     if (open) {
       loadAllSources()
+    } else {
+      setSearchQuery('')
+      setSelectedSourceIds([])
+      setTruncated(false)
     }
   }, [open, loadAllSources])
 
-  // Filter sources when search query changes
-  useEffect(() => {
-    if (!debouncedSearchQuery) {
-      setFilteredSources(allSources)
-      setIsSearching(false)
-      return
-    }
+  // Plain keyword matching against the title (which carries the relative
+  // path for folder imports), URL, file path and topics. No search backend.
+  const filteredSources = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return allSources
+    return allSources.filter((s) =>
+      [
+        s.title || '',
+        s.asset?.url || '',
+        s.asset?.file_path || '',
+        ...(s.topics || []),
+      ].some((h) => h.toLowerCase().includes(q))
+    )
+  }, [allSources, searchQuery])
 
-    performSearch()
-  }, [debouncedSearchQuery, allSources, performSearch])
+  const selectableIds = useMemo(
+    () =>
+      filteredSources
+        .filter((s) => !currentSourceIds.has(s.id))
+        .map((s) => s.id),
+    [filteredSources, currentSourceIds]
+  )
+
+  const allVisibleSelected =
+    selectableIds.length > 0 &&
+    selectableIds.every((id) => selectedSourceIds.includes(id))
 
   const handleToggleSource = (sourceId: string) => {
-    setSelectedSourceIds(prev =>
+    setSelectedSourceIds((prev) =>
       prev.includes(sourceId)
-        ? prev.filter(id => id !== sourceId)
+        ? prev.filter((id) => id !== sourceId)
         : [...prev, sourceId]
     )
+  }
+
+  const handleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      const visibleSet = new Set(selectableIds)
+      setSelectedSourceIds((prev) => prev.filter((id) => !visibleSet.has(id)))
+    } else {
+      const merged = new Set(selectedSourceIds)
+      selectableIds.forEach((id) => merged.add(id))
+      setSelectedSourceIds(Array.from(merged))
+    }
   }
 
   const handleAddSelected = async () => {
@@ -153,25 +142,18 @@ export function AddExistingSourceDialog({
         sourceIds: selectedSourceIds,
       })
 
-      // Reset state
       setSelectedSourceIds([])
       setSearchQuery('')
       onOpenChange(false)
       onSuccess?.()
     } catch (error) {
-      // Error handled by the hook's onError
       console.error('Error adding sources:', error)
     }
   }
 
   const getSourceIcon = (source: SourceListResponse) => {
-    // Derive type from asset
-    if (source.asset?.url) {
-      return <LinkIcon className="h-4 w-4" />
-    }
-    if (source.asset?.file_path) {
-      return <Upload className="h-4 w-4" />
-    }
+    if (source.asset?.url) return <LinkIcon className="h-4 w-4" />
+    if (source.asset?.file_path) return <Upload className="h-4 w-4" />
     return <FileText className="h-4 w-4" />
   }
 
@@ -196,24 +178,37 @@ export function AddExistingSourceDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 flex-1 overflow-hidden flex flex-col">
-          {/* Search Input */}
+        <div className="space-y-3 flex-1 overflow-hidden flex flex-col">
+          {/* Search */}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder={t('sources.searchPlaceholder')}
+              placeholder={t('sources.titleSearchPlaceholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"
+              autoFocus
             />
-            {isSearching && (
-              <LoaderIcon className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
-            )}
           </div>
 
-          {/* Source List */}
-          <ScrollArea className="h-[400px] border rounded-md">
-            {isSearching && filteredSources.length === 0 ? (
+          {/* Select all */}
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <Checkbox
+                checked={allVisibleSelected}
+                onCheckedChange={handleSelectAllVisible}
+                disabled={selectableIds.length === 0}
+              />
+              {t('sources.selectAllFiltered')}
+            </label>
+            <span className="text-xs text-muted-foreground">
+              {t('sources.filteredCount', { count: filteredSources.length })}
+            </span>
+          </div>
+
+          {/* List */}
+          <ScrollArea className="h-[360px] border rounded-md">
+            {isLoading ? (
               <div className="flex flex-col items-center justify-center h-[200px] text-muted-foreground">
                 <LoaderIcon className="h-12 w-12 mb-2 animate-spin" />
                 <p>{t('common.loading')}</p>
@@ -267,14 +262,10 @@ export function AddExistingSourceDialog({
             )}
           </ScrollArea>
 
-          {/* Truncation Warning */}
-          {allSources.length >= 100 && !debouncedSearchQuery && (
-            <p className="text-xs text-muted-foreground">
-              {t('sources.showingFirst100')}
-            </p>
+          {truncated && (
+            <p className="text-xs text-muted-foreground">{t('sources.tooManySources')}</p>
           )}
 
-          {/* Selection Summary */}
           {selectedSourceIds.length > 0 && (
             <div className="text-sm text-muted-foreground">
               {t('sources.selectedCount', { count: selectedSourceIds.length })}

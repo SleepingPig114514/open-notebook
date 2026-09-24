@@ -19,10 +19,13 @@ from pydantic import ValidationError
 from surreal_commands import execute_command_sync, submit_command
 
 from api.command_service import CommandService
+from api.folder_import_service import import_folder
 from api.credentials_service import validate_url
 from api.models import (
     AssetModel,
     CreateSourceInsightRequest,
+    FolderImportRequest,
+    FolderImportResponse,
     InsightCreationResponse,
     SourceCreate,
     SourceInsightResponse,
@@ -266,9 +269,24 @@ async def get_sources(
         description="Field to sort by (type, title, created, updated, insights_count, or embedded)",
     ),
     sort_order: str = Query("desc", description="Sort order (asc or desc)"),
+    embedded: Optional[str] = Query(
+        None,
+        description="Filter by vectorization status: 'true' = has embeddings, 'false' = missing embeddings, omit = all",
+    ),
 ):
     """Get sources with pagination and sorting support."""
     try:
+        # Validate vectorization filter ('true'/'false'/None)
+        embedded_clause = ""
+        if embedded is not None and embedded != "":
+            if embedded.lower() not in ["true", "false"]:
+                raise HTTPException(
+                    status_code=400, detail="embedded filter must be 'true' or 'false'"
+                )
+            has = embedded.lower() == "true"
+            sub = "(SELECT VALUE id FROM source_embedding WHERE source = $parent.id LIMIT 1)"
+            embedded_clause = f"AND {sub} {'!=' if has else '='} []"
+
         # Validate sort parameters
         if sort_by not in SOURCE_SORT_FIELDS:
             raise HTTPException(
@@ -302,14 +320,31 @@ async def get_sources(
         else:
             from_clause = "source"
 
+        # Vectorization-job subqueries: true when an embed_source command is
+        # still queued/running for this source (and whether the user asked to
+        # cancel it). GROUP ALL collapses the count to a single row.
+        active_sub = (
+            "((SELECT VALUE count() FROM command WHERE name='embed_source' "
+            "AND status IN ['new','running'] "
+            "AND args.source_id = type::string($parent.id) GROUP ALL)[0].count OR 0) > 0"
+        )
+        cancel_sub = (
+            "((SELECT VALUE count() FROM command WHERE name='embed_source' "
+            "AND status IN ['new','running'] AND cancel_requested = true "
+            "AND args.source_id = type::string($parent.id) GROUP ALL)[0].count OR 0) > 0"
+        )
+
         # Query sources - include command field with FETCH
         query = f"""
             SELECT id, asset, created, title, updated, topics, command,
             string::lowercase(title OR '') AS title_sort,
             ({SOURCE_TYPE_EXPRESSION}) AS type,
             (SELECT VALUE count() FROM source_insight WHERE source = $parent.id GROUP ALL)[0].count OR 0 AS insights_count,
-            (SELECT VALUE id FROM source_embedding WHERE source = $parent.id LIMIT 1) != [] AS embedded
+            (SELECT VALUE id FROM source_embedding WHERE source = $parent.id LIMIT 1) != [] AS embedded,
+            {active_sub} AS embedding_active,
+            {cancel_sub} AS embedding_cancel_requested
             FROM {from_clause}
+            WHERE true {embedded_clause}
             {order_clause}
             LIMIT $limit START $offset
             FETCH command
@@ -368,6 +403,8 @@ async def get_sources(
                     command_id=command_id,
                     status=status,
                     processing_info=processing_info,
+                    embedding_active=bool(row.get("embedding_active")),
+                    embedding_cancel_requested=bool(row.get("embedding_cancel_requested")),
                 )
             )
 
@@ -703,6 +740,34 @@ async def create_source(
         # Clean up uploaded file on unexpected errors if we created it
         _cleanup_uploaded_file(file_path, upload_file)
         raise HTTPException(status_code=500, detail="Error creating source")
+
+
+@router.post(
+    "/sources/import-folder",
+    response_model=FolderImportResponse,
+)
+async def import_folder_source(request: FolderImportRequest):
+    """Import all supported files from a local folder.
+
+    Repeating the call for the same path syncs it: new files are added,
+    changed files are recreated, missing files' sources are deleted.
+    """
+    try:
+        result = await import_folder(
+            path=request.path,
+            notebook_ids=request.notebooks,
+            embed=request.embed,
+            recursive=request.recursive,
+        )
+        return FolderImportResponse(**result.summary())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Folder import failed: {str(e)}")
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail="Folder import failed")
 
 
 @router.post("/sources/json", response_model=SourceResponse)

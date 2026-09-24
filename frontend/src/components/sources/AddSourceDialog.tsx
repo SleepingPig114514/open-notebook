@@ -21,6 +21,7 @@ import { ProcessingStep } from './steps/ProcessingStep'
 import { useNotebooks } from '@/lib/hooks/use-notebooks'
 import { useTransformations } from '@/lib/hooks/use-transformations'
 import { useCreateSource } from '@/lib/hooks/use-sources'
+import { sourcesApi } from '@/lib/api/sources'
 import { useSettings } from '@/lib/hooks/use-settings'
 import { CreateSourceRequest } from '@/lib/types/api'
 import { useTranslation } from '@/lib/hooks/use-translation'
@@ -28,11 +29,13 @@ import { useTranslation } from '@/lib/hooks/use-translation'
 const MAX_BATCH_SIZE = 50
 
 const createSourceSchema = z.object({
-  type: z.enum(['link', 'upload', 'text']),
+  type: z.enum(['link', 'upload', 'text', 'folder']),
   title: z.string().optional(),
   url: z.string().optional(),
   content: z.string().optional(),
   file: z.any().optional(),
+  folder_path: z.string().optional(),
+  recursive: z.boolean().optional(),
   notebooks: z.array(z.string()).optional(),
   transformations: z.array(z.string()).optional(),
   embed: z.boolean(),
@@ -49,6 +52,9 @@ const createSourceSchema = z.object({
       return data.file.length > 0
     }
     return !!data.file
+  }
+  if (data.type === 'folder') {
+    return !!data.folder_path && data.folder_path.trim() !== ''
   }
   return true
 }, {
@@ -135,6 +141,7 @@ export function AddSourceDialog({
       notebooks: defaultNotebookId ? [defaultNotebookId] : [],
       embed: settings?.default_embedding_option === 'always' || settings?.default_embedding_option === 'ask',
       async_processing: true,
+      recursive: true,
       transformations: [],
     },
   })
@@ -156,6 +163,7 @@ export function AddSourceDialog({
         notebooks: defaultNotebookId ? [defaultNotebookId] : [],
         embed: embedValue,
         async_processing: true,
+        recursive: true,
         transformations: [],
       })
     }
@@ -175,6 +183,7 @@ export function AddSourceDialog({
   const watchedContent = watch('content')
   const watchedFile = watch('file')
   const watchedTitle = watch('title')
+  const watchedFolderPath = watch('folder_path')
 
   // Batch mode detection
   const { isBatchMode, itemCount, parsedUrls, parsedFiles } = useMemo(() => {
@@ -232,6 +241,9 @@ export function AddSourceDialog({
             return watchedFile.length > 0 && watchedFile.length <= MAX_BATCH_SIZE
           }
           return !!watchedFile
+        }
+        if (selectedType === 'folder') {
+          return !!watchedFolderPath && watchedFolderPath.trim() !== ''
         }
         return true
       case 2:
@@ -298,8 +310,9 @@ export function AddSourceDialog({
 
   // Single source submission
   const submitSingleSource = async (data: CreateSourceFormData): Promise<void> => {
+    const singleType = data.type === 'folder' ? undefined : data.type
     const createRequest: CreateSourceRequest = {
-      type: data.type,
+      type: singleType as 'link' | 'upload' | 'text',
       notebooks: selectedNotebooks,
       url: data.type === 'link' ? data.url : undefined,
       content: data.type === 'text' ? data.content : undefined,
@@ -382,12 +395,35 @@ export function AddSourceDialog({
     return results
   }
 
+  // Folder import submission
+  const submitFolderImport = async (data: CreateSourceFormData): Promise<void> => {
+    const result = await sourcesApi.importFolder({
+      path: (data.folder_path || '').trim(),
+      notebooks: selectedNotebooks,
+      embed: data.embed,
+      recursive: data.recursive ?? true,
+    })
+
+    toast.success(
+      t('sources.folderImportSummary', {
+        added: result.added,
+        updated: result.updated,
+        deleted: result.deleted,
+        unchanged: result.unchanged,
+      }),
+    )
+  }
+
   // Form submission
   const onSubmit = async (data: CreateSourceFormData) => {
     try {
       setProcessing(true)
 
-      if (isBatchMode) {
+      if (data.type === 'folder') {
+        setProcessingStatus({ message: t('sources.importingFolder') })
+        await submitFolderImport(data)
+        handleClose()
+      } else if (isBatchMode) {
         // Batch submission
         setProcessingStatus({ message: t('sources.processingFiles') })
         const results = await submitBatch(data)

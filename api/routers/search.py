@@ -1,5 +1,5 @@
 import json
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -18,6 +18,20 @@ from open_notebook.exceptions import (
     OpenNotebookError,
 )
 from open_notebook.graphs.ask import graph as ask_graph
+
+
+def _ask_reasoning_levels(ask_request: AskRequest) -> Dict[str, str]:
+    """Assemble the per-stage reasoning levels for the ask graph.
+
+    Only non-None entries are passed so the graph falls back to the default
+    slot level for stages the caller did not configure.
+    """
+    levels = {
+        "strategy_reasoning_level": ask_request.strategy_reasoning_level,
+        "answer_reasoning_level": ask_request.answer_reasoning_level,
+        "final_answer_reasoning_level": ask_request.final_answer_reasoning_level,
+    }
+    return {k: v for k, v in levels.items() if v is not None}
 
 router = APIRouter()
 
@@ -80,6 +94,7 @@ async def stream_ask_response(
     answer_model: Model,
     final_answer_model: Model,
     notebook_ids: List[str],
+    reasoning_levels: Optional[Dict[str, str]] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream the ask response as Server-Sent Events."""
     try:
@@ -94,6 +109,7 @@ async def stream_ask_response(
                     strategy_model=strategy_model.id,
                     answer_model=answer_model.id,
                     final_answer_model=final_answer_model.id,
+                    **(reasoning_levels or {}),
                 )
             ),
             stream_mode="updates",
@@ -176,6 +192,7 @@ async def ask_knowledge_base(ask_request: AskRequest):
                 answer_model,
                 final_answer_model,
                 notebook_ids,
+                reasoning_levels=_ask_reasoning_levels(ask_request),
             ),
             media_type="text/event-stream",
             headers={
@@ -241,6 +258,7 @@ async def ask_knowledge_base_simple(ask_request: AskRequest):
                     strategy_model=strategy_model.id,
                     answer_model=answer_model.id,
                     final_answer_model=final_answer_model.id,
+                    **_ask_reasoning_levels(ask_request),
                 )
             ),
             stream_mode="updates",

@@ -48,6 +48,7 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
             str(payload),
             config.get("configurable", {}).get("model_id"),
             "transformation",
+            reasoning_level=config.get("configurable", {}).get("reasoning_level"),
             max_tokens=8192,
         )
 

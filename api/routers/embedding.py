@@ -2,8 +2,16 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from api.command_service import CommandService
-from api.models import EmbedRequest, EmbedResponse
+from api.models import (
+    EmbedActiveStatusRequest,
+    EmbedActiveStatusResponse,
+    EmbedCancelRequest,
+    EmbedCancelResponse,
+    EmbedRequest,
+    EmbedResponse,
+)
 from open_notebook.ai.models import model_manager
+from open_notebook.database.repository import repo_query
 from open_notebook.domain.notebook import Note, Source
 from open_notebook.exceptions import (
     NotFoundError,
@@ -11,6 +19,77 @@ from open_notebook.exceptions import (
 )
 
 router = APIRouter()
+
+
+@router.post("/embed/cancel", response_model=EmbedCancelResponse)
+async def cancel_embedding(cancel_request: EmbedCancelRequest):
+    """Flag active vectorization jobs for a source as cancelled.
+
+    Cooperative cancellation: running jobs check the flag between embedding
+    batches and abort; queued jobs abort before touching existing embeddings.
+    """
+    try:
+        source_id = cancel_request.item_id
+        if ":" not in source_id:
+            source_id = f"source:{source_id}"
+        rows = await repo_query(
+            "UPDATE command SET cancel_requested = true "
+            "WHERE name = 'embed_source' AND status IN ['new', 'running'] "
+            "AND args.source_id = $sid RETURN meta::id(id) AS cid",
+            {"sid": source_id},
+        )
+        count = len(rows or [])
+        logger.info(f"Cancelled {count} active embed_source job(s) for {source_id}")
+        return EmbedCancelResponse(
+            success=True,
+            cancelled_commands=count,
+            message=(
+                f"Cancelled {count} active embedding job(s)"
+                if count
+                else "No active embedding jobs to cancel"
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Error cancelling embeddings for {cancel_request.item_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error cancelling embeddings: {str(e)}")
+
+
+@router.post("/embed/active-status", response_model=EmbedActiveStatusResponse)
+async def embed_active_status(status_request: EmbedActiveStatusRequest):
+    """Report which of the given sources have vectorization jobs in flight.
+
+    Lightweight batched poll endpoint for the sources list: returns the set
+    of source IDs with an embed_source command still queued/running, plus
+    whether cancellation has been requested for them.
+    """
+    try:
+        ids = [
+            sid if ":" in sid else f"source:{sid}"
+            for sid in status_request.item_ids
+        ]
+        if not ids:
+            return EmbedActiveStatusResponse(active_ids=[], cancel_requested_ids=[])
+        rows = await repo_query(
+            "SELECT args.source_id AS sid, status, cancel_requested FROM command "
+            "WHERE name = 'embed_source' AND status IN ['new', 'running'] "
+            "AND args.source_id IN $ids",
+            {"ids": ids},
+        )
+        active: list[str] = []
+        canceling: list[str] = []
+        seen: set[str] = set()
+        for row in rows or []:
+            sid = row.get("sid")
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            active.append(sid)
+            if row.get("cancel_requested"):
+                canceling.append(sid)
+        return EmbedActiveStatusResponse(active_ids=active, cancel_requested_ids=canceling)
+    except Exception as e:
+        logger.error(f"Error fetching embed active status: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching embedding status")
 
 
 @router.post("/embed", response_model=EmbedResponse)

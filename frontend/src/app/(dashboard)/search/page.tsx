@@ -21,7 +21,7 @@ import { useModelDefaults, useModels } from '@/lib/hooks/use-models'
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StreamingResponse } from '@/components/search/StreamingResponse'
-import { AdvancedModelsDialog } from '@/components/search/AdvancedModelsDialog'
+import { AdvancedModelsDialog, AskModelSelection } from '@/components/search/AdvancedModelsDialog'
 import { SaveToNotebooksDialog } from '@/components/search/SaveToNotebooksDialog'
 import { NotebookScopeSelector } from '@/components/search/NotebookScopeSelector'
 
@@ -52,11 +52,7 @@ export default function SearchPage() {
 
   // Advanced models dialog
   const [showAdvancedModels, setShowAdvancedModels] = useState(false)
-  const [customModels, setCustomModels] = useState<{
-    strategy: string
-    answer: string
-    finalAnswer: string
-  } | null>(null)
+  const [customModels, setCustomModels] = useState<AskModelSelection | null>(null)
 
   // Save to notebooks dialog
   const [showSaveDialog, setShowSaveDialog] = useState(false)
@@ -109,7 +105,7 @@ export default function SearchPage() {
   const handleAsk = useCallback(() => {
     if (!askQuestion.trim() || !modelDefaults?.default_chat_model) return
 
-    const models = customModels || {
+    const models: AskModelSelection = customModels || {
       strategy: modelDefaults.default_chat_model,
       answer: modelDefaults.default_chat_model,
       finalAnswer: modelDefaults.default_chat_model
@@ -302,7 +298,10 @@ export default function SearchPage() {
                   defaultModels={{
                     strategy: customModels?.strategy || modelDefaults?.default_chat_model || '',
                     answer: customModels?.answer || modelDefaults?.default_chat_model || '',
-                    finalAnswer: customModels?.finalAnswer || modelDefaults?.default_chat_model || ''
+                    finalAnswer: customModels?.finalAnswer || modelDefaults?.default_chat_model || '',
+                    strategyReasoning: customModels?.strategyReasoning ?? null,
+                    answerReasoning: customModels?.answerReasoning ?? null,
+                    finalAnswerReasoning: customModels?.finalAnswerReasoning ?? null
                   }}
                   onSave={setCustomModels}
                 />

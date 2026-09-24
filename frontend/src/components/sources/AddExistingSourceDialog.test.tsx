@@ -1,16 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AddExistingSourceDialog } from './AddExistingSourceDialog'
-import { searchApi } from '@/lib/api/search'
 import { sourcesApi } from '@/lib/api/sources'
-
-vi.mock('use-debounce', () => ({
-  useDebounce: (value: string) => [value],
-}))
-
-vi.mock('@/lib/api/search', () => ({
-  searchApi: { search: vi.fn() },
-}))
+import type { SourceListResponse } from '@/lib/types/api'
 
 vi.mock('@/lib/api/sources', () => ({
   sourcesApi: { list: vi.fn() },
@@ -22,38 +14,32 @@ vi.mock('@/lib/hooks/use-sources', () => ({
   useAddSourcesToNotebook: () => ({ mutateAsync, isPending: false }),
 }))
 
-const mockSearch = vi.mocked(searchApi.search)
 const mockList = vi.mocked(sourcesApi.list)
+
+function makeSource(id: string, title: string): SourceListResponse {
+  return {
+    id,
+    title,
+    topics: [],
+    asset: null,
+    embedded: false,
+    embedded_chunks: 0,
+    insights_count: 0,
+    created: '2026-01-01T00:00:00Z',
+    updated: '2026-01-01T00:00:00Z',
+  }
+}
 
 describe('AddExistingSourceDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockList.mockResolvedValue([])
-    mockSearch.mockResolvedValue({
-      results: [
-        {
-          id: 'source:shared',
-          parent_id: 'source:shared',
-          title: 'Direct source match',
-          final_score: 0.9,
-          created: '2026-01-01T00:00:00Z',
-          updated: '2026-01-01T00:00:00Z',
-        },
-        {
-          id: 'source_insight:child',
-          parent_id: 'source:shared',
-          title: 'Insight from same source',
-          final_score: 0.8,
-          created: '2026-01-01T00:00:00Z',
-          updated: '2026-01-01T00:00:00Z',
-        },
-      ],
-      total_count: 2,
-      search_type: 'text',
-    })
+    mockList.mockResolvedValue([
+      makeSource('source:shared', 'shared doc one'),
+      makeSource('source:other', 'unrelated doc'),
+    ])
   })
 
-  it('shows a source only once when several search hits have the same parent', async () => {
+  it('filters loaded sources by title keyword without a search backend', async () => {
     render(
       <AddExistingSourceDialog
         open={true}
@@ -62,12 +48,16 @@ describe('AddExistingSourceDialog', () => {
       />
     )
 
-    fireEvent.change(screen.getByPlaceholderText('sources.searchPlaceholder'), {
-      target: { value: 'shared' },
-    })
+    await waitFor(() => expect(mockList).toHaveBeenCalled())
+    expect(screen.getByText('shared doc one')).toBeInTheDocument()
+    expect(screen.getByText('unrelated doc')).toBeInTheDocument()
 
-    await waitFor(() => expect(mockSearch).toHaveBeenCalled())
-    expect(screen.getByText('Direct source match')).toBeInTheDocument()
-    expect(screen.queryByText('Insight from same source')).not.toBeInTheDocument()
+    fireEvent.change(
+      screen.getByPlaceholderText('sources.titleSearchPlaceholder'),
+      { target: { value: 'shared' } }
+    )
+
+    expect(screen.getByText('shared doc one')).toBeInTheDocument()
+    expect(screen.queryByText('unrelated doc')).not.toBeInTheDocument()
   })
 })

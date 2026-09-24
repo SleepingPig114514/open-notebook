@@ -37,6 +37,10 @@ export interface AskRequest {
   strategy_model: string
   answer_model: string
   final_answer_model: string
+  /** Optional per-stage reasoning (thinking) levels; omit = follow slot default. */
+  strategy_reasoning_level?: string
+  answer_reasoning_level?: string
+  final_answer_reasoning_level?: string
   /** Restrict every search of the strategy to these notebooks; omit or empty for all (#574, #87). */
   notebook_ids?: string[]
 }

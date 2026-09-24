@@ -6,6 +6,7 @@ without heavy mocking of the actual processing logic.
 """
 
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -302,7 +303,13 @@ class TestContentProcessDeleteSource:
             title="Doc", content="extracted text"
         )
 
-        uploaded = tmp_path / "upload.pdf"
+        # The deletion guard only removes files inside the uploads folder
+        # (external originals are never touched) - place the fixture there.
+        from open_notebook.config import UPLOADS_FOLDER
+
+        uploads_dir = Path(UPLOADS_FOLDER)
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        uploaded = uploads_dir / "upload.pdf"
         uploaded.write_text("data")
 
         state = {
@@ -312,7 +319,10 @@ class TestContentProcessDeleteSource:
             "apply_transformations": [],
         }
 
-        result = await content_process(cast(SourceState, state))
+        try:
+            result = await content_process(cast(SourceState, state))
+        finally:
+            uploaded.unlink(missing_ok=True)
 
         assert result["extraction"].content == "extracted text"
         assert not uploaded.exists()  # file removed by the graph

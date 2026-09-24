@@ -6,6 +6,7 @@ export interface Transformation {
   prompt: string
   apply_default: boolean
   model_id: string | null
+  reasoning_level?: string | null
   created: string
   updated: string
 }
@@ -17,6 +18,7 @@ export interface CreateTransformationRequest {
   prompt: string
   apply_default?: boolean
   model_id?: string | null
+  reasoning_level?: string | null
 }
 
 export interface UpdateTransformationRequest {
@@ -26,12 +28,14 @@ export interface UpdateTransformationRequest {
   prompt?: string
   apply_default?: boolean
   model_id?: string | null
+  reasoning_level?: string | null
 }
 
 export interface ExecuteTransformationRequest {
   transformation_id: string
   input_text: string
   model_id?: string | null
+  reasoning_level?: string | null
 }
 
 export interface ExecuteTransformationResponse {

@@ -442,6 +442,7 @@ class TestUpdateDefaultModels:
         defaults.default_speech_to_text_model = None
         defaults.default_embedding_model = "model:embed"
         defaults.default_tools_model = "model:tools"
+        defaults.model_args = None
         defaults.update = AsyncMock()
         return defaults
 
@@ -487,6 +488,39 @@ class TestUpdateDefaultModels:
         assert response.status_code == 200
         assert defaults.default_chat_model == "model:new-chat"
         defaults.update.assert_awaited_once()
+
+    def test_model_args_roundtrip_and_absence(self, client):
+        """model_args is stored/echoed, and an absent key leaves it untouched."""
+        defaults = self._mock_defaults()
+        response = self._put(
+            client,
+            defaults,
+            {"model_args": {"default_chat_model": "off", "large_context_model": "low"}},
+        )
+
+        assert response.status_code == 200
+        assert defaults.model_args == {
+            "default_chat_model": "off",
+            "large_context_model": "low",
+        }
+        assert response.json()["model_args"] == defaults.model_args
+
+        defaults2 = self._mock_defaults()
+        defaults2.model_args = {"default_chat_model": "xhigh"}
+        response2 = self._put(client, defaults2, {"default_chat_model": "model:x"})
+        assert response2.status_code == 200
+        assert defaults2.model_args == {"default_chat_model": "xhigh"}
+
+    def test_model_args_rejects_unknown_slot_or_level(self, client):
+        defaults = self._mock_defaults()
+        bad_slot = self._put(client, defaults, {"model_args": {"nope": "off"}})
+        assert bad_slot.status_code == 422
+
+        bad_level = self._put(
+            client, defaults, {"model_args": {"default_chat_model": "ultra"}}
+        )
+        assert bad_level.status_code == 422
+        defaults.update.assert_not_awaited()
 
 
 class TestAutoAssignDefaults:

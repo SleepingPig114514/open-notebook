@@ -150,6 +150,8 @@ def _call_model_with_source_context_inner(
     payload = [SystemMessage(content=system_prompt)] + state.get("messages", [])
 
     # Handle async model provisioning from sync context
+    reasoning_level = config.get("configurable", {}).get("reasoning_level")
+
     def run_in_new_loop():
         """Run the async function in a new event loop"""
         new_loop = asyncio.new_event_loop()
@@ -161,6 +163,7 @@ def _call_model_with_source_context_inner(
                     config.get("configurable", {}).get("model_id")
                     or state.get("model_override"),
                     "chat",
+                    reasoning_level=reasoning_level,
                     max_tokens=8192,
                 )
             )
@@ -185,6 +188,7 @@ def _call_model_with_source_context_inner(
                 config.get("configurable", {}).get("model_id")
                 or state.get("model_override"),
                 "chat",
+                reasoning_level=reasoning_level,
                 max_tokens=8192,
             )
         )

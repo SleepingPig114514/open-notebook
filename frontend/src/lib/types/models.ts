@@ -23,7 +23,13 @@ export interface ModelDefaults {
   default_speech_to_text_model?: string | null
   default_embedding_model?: string | null
   default_tools_model?: string | null
+  // Per-slot reasoning (thinking) level for the four language slots.
+  // Keys are the model-field names above; values: off/low/medium/xhigh.
+  // Absent key = follow the provider's factory default.
+  model_args?: Record<string, ReasoningLevel> | null
 }
+
+export type ReasoningLevel = 'off' | 'low' | 'medium' | 'xhigh'
 
 export interface ProviderAvailability {
   available: string[]

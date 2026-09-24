@@ -21,7 +21,8 @@ async def start_rebuild(request: RebuildRequest):
     """
     Start a background job to rebuild embeddings.
 
-    - **mode**: "existing" (re-embed items with embeddings) or "all" (embed everything)
+    - **mode**: "existing" (re-embed items with embeddings), "all" (embed everything)
+      or "missing" (embed only items with content but no embedding yet)
     - **include_sources**: Include sources in rebuild (default: true)
     - **include_notes**: Include notes in rebuild (default: true)
     - **include_insights**: Include insights in rebuild (default: true)
@@ -50,6 +51,18 @@ async def start_rebuild(request: RebuildRequest):
                     )) as count FROM {}
                     """
                 )
+            elif request.mode == "missing":
+                # Count sources with content but no embedding chunks
+                result = await repo_query(
+                    """
+                    SELECT VALUE count() as count FROM source
+                    WHERE full_text != none AND string::trim(full_text) != ''
+                    AND count(
+                        SELECT id FROM source_embedding WHERE source = $parent.id
+                    ) = 0
+                    GROUP ALL
+                    """
+                )
             else:
                 # Count all sources with content
                 result = await repo_query(
@@ -66,6 +79,10 @@ async def start_rebuild(request: RebuildRequest):
                 result = await repo_query(
                     "SELECT VALUE count() as count FROM note WHERE embedding != none AND array::len(embedding) > 0 GROUP ALL"
                 )
+            elif request.mode == "missing":
+                result = await repo_query(
+                    "SELECT VALUE count() as count FROM note WHERE content != none AND string::trim(content) != '' AND (embedding = none OR array::len(embedding) = 0) GROUP ALL"
+                )
             else:
                 result = await repo_query(
                     "SELECT VALUE count() as count FROM note WHERE content != none GROUP ALL"
@@ -80,6 +97,10 @@ async def start_rebuild(request: RebuildRequest):
             if request.mode == "existing":
                 result = await repo_query(
                     "SELECT VALUE count() as count FROM source_insight WHERE embedding != none AND array::len(embedding) > 0 GROUP ALL"
+                )
+            elif request.mode == "missing":
+                result = await repo_query(
+                    "SELECT VALUE count() as count FROM source_insight WHERE content != none AND string::trim(content) != '' AND (embedding = none OR array::len(embedding) = 0) GROUP ALL"
                 )
             else:
                 result = await repo_query(

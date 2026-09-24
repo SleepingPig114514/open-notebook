@@ -14,7 +14,7 @@ export interface EmbedContentResponse {
 }
 
 export interface RebuildEmbeddingsRequest {
-  mode: 'existing' | 'all'
+  mode: 'existing' | 'all' | 'missing'
   include_sources?: boolean
   include_notes?: boolean
   include_insights?: boolean
@@ -57,6 +57,17 @@ export interface RebuildStatusResponse {
   error_message?: string
 }
 
+export interface EmbedCancelResponse {
+  success: boolean
+  cancelled_commands: number
+  message: string
+}
+
+export interface EmbedActiveStatusResponse {
+  active_ids: string[]
+  cancel_requested_ids: string[]
+}
+
 export const embeddingApi = {
   embedContent: async (itemId: string, itemType: 'source' | 'note', asyncProcessing = false): Promise<EmbedContentResponse> => {
     const response = await apiClient.post<EmbedContentResponse>('/embed', {
@@ -69,6 +80,20 @@ export const embeddingApi = {
 
   rebuildEmbeddings: async (request: RebuildEmbeddingsRequest): Promise<RebuildEmbeddingsResponse> => {
     const response = await apiClient.post<RebuildEmbeddingsResponse>('/embeddings/rebuild', request)
+    return response.data
+  },
+
+  cancelEmbedding: async (itemId: string): Promise<EmbedCancelResponse> => {
+    const response = await apiClient.post<EmbedCancelResponse>('/embed/cancel', {
+      item_id: itemId,
+    })
+    return response.data
+  },
+
+  getActiveStatus: async (itemIds: string[]): Promise<EmbedActiveStatusResponse> => {
+    const response = await apiClient.post<EmbedActiveStatusResponse>('/embed/active-status', {
+      item_ids: itemIds,
+    })
     return response.data
   },
 

@@ -373,7 +373,7 @@ function SourceDetailContentInner({
   const handleDelete = async () => {
     if (!source) return
 
-    if (confirm(t('sources.deleteSourceConfirm') || t('common.confirm'))) {
+    if (confirm(t('sources.removeFromSourcesConfirm') || t('common.confirm'))) {
       try {
         // The mutation hook shows the toasts and invalidates the source
         // queries, so a reopened dialog can't serve the deleted source from
@@ -475,7 +475,7 @@ function SourceDetailContentInner({
                   onClick={handleDelete}
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
-                  {t('sources.deleteSource')}
+                  {t('sources.removeFromSources')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

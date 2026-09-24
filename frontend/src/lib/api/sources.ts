@@ -7,7 +7,9 @@ import {
   SourceResponse,
   SourceStatusResponse,
   CreateSourceRequest, 
-  UpdateSourceRequest 
+  UpdateSourceRequest,
+  FolderImportRequest,
+  FolderImportResponse
 } from '@/lib/types/api'
 
 export type SourceSortField = 'type' | 'title' | 'created' | 'updated' | 'insights_count' | 'embedded'
@@ -19,6 +21,7 @@ export const sourcesApi = {
     offset?: number
     sort_by?: SourceSortField
     sort_order?: 'asc' | 'desc'
+    embedded?: 'true' | 'false'
   }) => {
     const response = await apiClient.get<SourceListResponse[]>('/sources', { params })
     return response.data
@@ -106,5 +109,13 @@ export const sourcesApi = {
     return apiClient.get(`/sources/${id}/download`, {
       responseType: 'blob',
     })
+  },
+
+  importFolder: async (data: FolderImportRequest) => {
+    const response = await apiClient.post<FolderImportResponse>(
+      '/sources/import-folder',
+      data,
+    )
+    return response.data
   },
 }

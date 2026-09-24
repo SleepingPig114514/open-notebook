@@ -1,0 +1,2 @@
+-- Rollback for migration 26: remove the per-transformation reasoning level.
+REMOVE FIELD IF EXISTS reasoning_level ON TABLE transformation;

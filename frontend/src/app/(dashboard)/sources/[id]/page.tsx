@@ -63,6 +63,12 @@ export default function SourceDetailPage() {
                 chat.updateSession(chat.currentSessionId, { model_override: model })
               }
             }}
+            reasoningLevel={chat.currentSession?.reasoning_level ?? null}
+            onReasoningChange={(level) => {
+              if (chat.currentSessionId) {
+                chat.updateSession(chat.currentSessionId, { reasoning_level: level ?? null })
+              }
+            }}
             sessions={chat.sessions}
             currentSessionId={chat.currentSessionId}
             onCreateSession={(title) => chat.createSession({ title })}

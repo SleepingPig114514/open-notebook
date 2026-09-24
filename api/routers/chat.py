@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.routers._chat_shared import (
     ChatMessage,
@@ -13,6 +13,7 @@ from api.routers._chat_shared import (
     extract_chat_messages,
     get_session_or_404,
 )
+from open_notebook.ai.thinking import REASONING_LEVELS
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import ChatSession, Notebook
 from open_notebook.exceptions import (
@@ -28,12 +29,31 @@ router = APIRouter()
 
 
 # Request/Response models
+def _validate_reasoning_level(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if value not in REASONING_LEVELS:
+        raise ValueError(
+            f"Invalid reasoning level {value!r}. Allowed: {sorted(REASONING_LEVELS)}"
+        )
+    return value
+
+
 class CreateSessionRequest(BaseModel):
     notebook_id: str = Field(..., description="Notebook ID to create session for")
     title: Optional[str] = Field(None, description="Optional session title")
     model_override: Optional[str] = Field(
         None, description="Optional model override for this session"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Optional reasoning level (off/low/medium/xhigh) for this session",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_rl(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_reasoning_level(value)
 
 
 class UpdateSessionRequest(BaseModel):
@@ -41,6 +61,15 @@ class UpdateSessionRequest(BaseModel):
     model_override: Optional[str] = Field(
         None, description="Model override for this session"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Reasoning level for this session; null clears it (slot default)",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_rl(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_reasoning_level(value)
 
 
 class ChatSessionResponse(BaseModel):
@@ -54,6 +83,9 @@ class ChatSessionResponse(BaseModel):
     )
     model_override: Optional[str] = Field(
         None, description="Model override for this session"
+    )
+    reasoning_level: Optional[str] = Field(
+        None, description="Reasoning level for this session"
     )
 
 
@@ -72,6 +104,15 @@ class ExecuteChatRequest(BaseModel):
     model_override: Optional[str] = Field(
         None, description="Optional model override for this message"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Optional reasoning level for this message (overrides session level)",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_rl(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_reasoning_level(value)
 
 
 class ExecuteChatResponse(BaseModel):
@@ -118,6 +159,7 @@ async def get_sessions(notebook_id: str = Query(..., description="Notebook ID"))
                     updated=str(session.updated),
                     message_count=msg_count,
                     model_override=getattr(session, "model_override", None),
+                    reasoning_level=getattr(session, "reasoning_level", None),
                 )
             )
 
@@ -149,6 +191,7 @@ async def create_session(request: CreateSessionRequest):
             title=request.title
             or f"Chat Session {asyncio.get_event_loop().time():.0f}",
             model_override=request.model_override,
+            reasoning_level=request.reasoning_level,
         )
         await session.save()
 
@@ -163,6 +206,7 @@ async def create_session(request: CreateSessionRequest):
             updated=str(session.updated),
             message_count=0,
             model_override=session.model_override,
+            reasoning_level=session.reasoning_level,
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Notebook not found")
@@ -221,6 +265,7 @@ async def get_session(session_id: str):
             message_count=len(messages),
             messages=messages,
             model_override=getattr(session, "model_override", None),
+            reasoning_level=getattr(session, "reasoning_level", None),
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -248,6 +293,9 @@ async def update_session(session_id: str, request: UpdateSessionRequest):
         if "model_override" in update_data:
             session.model_override = update_data["model_override"]
 
+        if "reasoning_level" in update_data:
+            session.reasoning_level = update_data["reasoning_level"]
+
         await session.save()
 
         # Find notebook_id
@@ -268,6 +316,7 @@ async def update_session(session_id: str, request: UpdateSessionRequest):
             updated=str(session.updated),
             message_count=msg_count,
             model_override=session.model_override,
+            reasoning_level=session.reasoning_level,
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -324,6 +373,14 @@ async def execute_chat(request: ExecuteChatRequest):
             else getattr(session, "model_override", None)
         )
 
+        # Determine reasoning level (per-request override takes precedence
+        # over session-level; None = chat slot level)
+        reasoning_level = (
+            request.reasoning_level
+            if request.reasoning_level is not None
+            else getattr(session, "reasoning_level", None)
+        )
+
         # Get current state
         # Use sync get_state() in a thread since SqliteSaver doesn't support async
         current_state = await asyncio.to_thread(
@@ -359,6 +416,7 @@ async def execute_chat(request: ExecuteChatRequest):
                     configurable={
                         "thread_id": full_session_id,
                         "model_id": model_override,
+                        "reasoning_level": reasoning_level,
                     }
                 ),
             )

@@ -11,6 +11,7 @@ import { Play, Loader2 } from 'lucide-react'
 import { Transformation } from '@/lib/types/transformations'
 import { useExecuteTransformation } from '@/lib/hooks/use-transformations'
 import { ModelSelector } from '@/components/common/ModelSelector'
+import { ReasoningLevel } from '@/lib/types/models'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -27,6 +28,7 @@ export function TransformationPlayground({ transformations, selectedTransformati
   const [selectedId, setSelectedId] = useState(selectedTransformation?.id || '')
   const [inputText, setInputText] = useState('')
   const [modelId, setModelId] = useState('')
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel | null>(null)
   const [output, setOutput] = useState('')
   
   const executeTransformation = useExecuteTransformation()
@@ -39,7 +41,8 @@ export function TransformationPlayground({ transformations, selectedTransformati
     const result = await executeTransformation.mutateAsync({
       transformation_id: selectedId,
       input_text: inputText,
-      model_id: modelId
+      model_id: modelId,
+      reasoning_level: reasoningLevel
     })
 
     setOutput(result.output)
@@ -82,6 +85,9 @@ export function TransformationPlayground({ transformations, selectedTransformati
                 value={modelId}
                 onChange={setModelId}
                 placeholder={t('transformations.selectModel')}
+                showReasoning
+                reasoningLevel={reasoningLevel}
+                onReasoningChange={setReasoningLevel}
               />
             </div>
           </div>

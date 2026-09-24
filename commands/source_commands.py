@@ -224,7 +224,10 @@ async def run_transformation_command(
         # overloads require the full state type (langgraph typing limitation).
         await transform_graph.ainvoke(  # type: ignore[call-overload]
             input=dict(source=source, transformation=transformation),
-            config=RunnableConfig(configurable={"model_id": transformation.model_id}),
+            config=RunnableConfig(configurable={
+                "model_id": transformation.model_id,
+                "reasoning_level": getattr(transformation, "reasoning_level", None),
+            }),
         )
 
         processing_time = time.time() - start_time

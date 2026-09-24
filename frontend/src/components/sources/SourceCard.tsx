@@ -376,7 +376,7 @@ function SourceCardImpl({
                 className="text-destructive focus:text-destructive"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
-                {t('sources.deleteSource')}
+                {t('sources.removeFromSources')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

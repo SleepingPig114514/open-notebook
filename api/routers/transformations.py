@@ -1,6 +1,7 @@
 from typing import List
 
 from fastapi import APIRouter, HTTPException
+from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
 from api.models import (
@@ -29,6 +30,7 @@ def _transformation_response(transformation: Transformation) -> TransformationRe
         prompt=transformation.prompt,
         apply_default=transformation.apply_default,
         model_id=transformation.model_id,
+        reasoning_level=transformation.reasoning_level,
         created=str(transformation.created),
         updated=str(transformation.updated),
     )
@@ -73,6 +75,7 @@ async def create_transformation(transformation_data: TransformationCreate):
             prompt=transformation_data.prompt,
             apply_default=transformation_data.apply_default,
             model_id=transformation_data.model_id,
+            reasoning_level=transformation_data.reasoning_level,
         )
         await new_transformation.save()
 
@@ -101,6 +104,12 @@ async def execute_transformation(execute_request: TransformationExecuteRequest):
 
         model_id = execute_request.model_id or transformation.model_id
 
+        # Reasoning level precedence: per-run override > transformation's
+        # stored level > (inside provision) the transformation slot level.
+        reasoning_level = (
+            execute_request.reasoning_level or transformation.reasoning_level
+        )
+
         # Validate explicit or transformation-specific model exists.
         # None is allowed so the graph can use the configured transformation default.
         if model_id:
@@ -116,7 +125,12 @@ async def execute_transformation(execute_request: TransformationExecuteRequest):
                 input_text=execute_request.input_text,
                 transformation=transformation,
             ),
-            config=dict(configurable={"model_id": model_id}),
+            config=RunnableConfig(
+                configurable={
+                    "model_id": model_id,
+                    "reasoning_level": reasoning_level,
+                }
+            ),
         )
 
         return TransformationExecuteResponse(
@@ -234,6 +248,9 @@ async def update_transformation(
                 if not model:
                     raise HTTPException(status_code=404, detail="Model not found")
             transformation.model_id = transformation_update.model_id
+
+        if "reasoning_level" in transformation_update.model_fields_set:
+            transformation.reasoning_level = transformation_update.reasoning_level
 
         await transformation.save()
 

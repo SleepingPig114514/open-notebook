@@ -47,6 +47,38 @@ EMBEDDING_MAX_RETRIES = 3
 EMBEDDING_RETRY_DELAY = 2  # seconds
 
 
+class EmbeddingCancelledError(RuntimeError):
+    """Raised inside a background embedding job when the user requested
+    cancellation (command.cancel_requested=true). Not retried - see
+    EMBED_RETRY_CONFIG stop_on in commands/embedding_commands.py."""
+
+    pass
+
+
+async def command_cancel_requested(command_id: Optional[str]) -> bool:
+    """Check whether a running command has been flagged for cancellation.
+
+    Cheap per-batch cooperative check: one indexed query on the command
+    table. Returns False for ad-hoc calls without a command context.
+    """
+    if not command_id or command_id == "unknown":
+        return False
+    try:
+        # Lazy import to avoid a utils -> database dependency at module load.
+        from open_notebook.database.repository import repo_query
+
+        cid = command_id.split(":", 1)[1] if ":" in command_id else command_id
+        rows = await repo_query(
+            "SELECT VALUE cancel_requested FROM command "
+            "WHERE meta::id(id) = $cid LIMIT 1",
+            {"cid": cid},
+        )
+        return bool(rows and rows[0])
+    except Exception as e:  # pragma: no cover - defensive: never break embedding
+        logger.debug(f"Cancel-check for command {command_id} failed: {e}")
+        return False
+
+
 async def mean_pool_embeddings(embeddings: List[List[float]]) -> List[float]:
     """
     Combine multiple embeddings into a single embedding using mean pooling.
@@ -167,6 +199,13 @@ async def generate_embeddings(
     total_batches = (len(texts) + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
 
     for batch_idx in range(total_batches):
+        # Cooperative cancellation: check once per batch so a user-requested
+        # stop takes effect within one API call instead of mid-request.
+        if await command_cancel_requested(command_id):
+            raise EmbeddingCancelledError(
+                f"Embedding cancelled by user (command: {command_id}, "
+                f"batch {batch_idx + 1}/{total_batches})"
+            )
         start = batch_idx * EMBEDDING_BATCH_SIZE
         end = start + EMBEDDING_BATCH_SIZE
         batch = texts[start:end]

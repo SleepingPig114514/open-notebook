@@ -5,17 +5,17 @@ import { useForm } from 'react-hook-form'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
-import { Loader2, X, AlertCircle, Wand2 } from 'lucide-react'
+import { Loader2, AlertCircle, Wand2 } from 'lucide-react'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import { useUpdateModelDefaults, useAutoAssignDefaults } from '@/lib/hooks/use-models'
-import { Model, ModelDefaults } from '@/lib/types/models'
+import { Model, ModelDefaults, ReasoningLevel } from '@/lib/types/models'
 import { ModelType } from '@/lib/providers'
+import { ModelPicker } from '@/components/common/ModelPicker'
 import { EmbeddingModelChangeDialog } from './EmbeddingModelChangeDialog'
 
 interface DefaultConfig {
-  key: keyof ModelDefaults
+  key: ModelSlotKey
   label: string
   description: string
   modelType: ModelType
@@ -25,17 +25,20 @@ interface DefaultConfig {
   id: string
 }
 
-// Radix Select reserves "" for "no selection", so the clear option needs a sentinel.
-const NONE_VALUE = '__none__'
+// A model slot (excludes the model_args container field itself).
+type ModelSlotKey = Exclude<keyof ModelDefaults, 'model_args'>
 
 interface DefaultModelSelectProps {
   config: DefaultConfig
   available: Model[]
   currentValue?: string
-  onChange: (key: keyof ModelDefaults, value: string) => void
+  onChange: (key: ModelSlotKey, value: string) => void
   showDescription?: boolean
   /** Name of the currently selected chat model, used for the fallback hint. */
   chatModelName?: string
+  /** Per-slot reasoning (thinking) level; null/undefined = provider default. */
+  reasoningLevel?: ReasoningLevel | null
+  onReasoningChange?: (key: ModelSlotKey, level: ReasoningLevel | null) => void
 }
 
 function DefaultModelSelect({
@@ -45,6 +48,8 @@ function DefaultModelSelect({
   onChange,
   showDescription,
   chatModelName,
+  reasoningLevel,
+  onReasoningChange,
 }: DefaultModelSelectProps) {
   const { t } = useTranslation()
   const isValid = currentValue && available.some(m => m.id === currentValue)
@@ -69,45 +74,29 @@ function DefaultModelSelect({
         {config.label}
         {config.required && <span className="text-destructive ml-0.5">*</span>}
       </Label>
-      <div className="flex gap-1">
-        <Select
-          value={currentValue || (config.required ? "" : NONE_VALUE)}
-          onValueChange={(v) => onChange(config.key, v === NONE_VALUE ? "" : v)}
-        >
-          <SelectTrigger
-            id={config.id}
-            className={`h-8 text-xs ${config.required && !isValid && available.length > 0 ? 'border-destructive' : ''}`}
-          >
-            <SelectValue placeholder={
-              config.required && !isValid && available.length > 0
-                ? t('models.requiredModelPlaceholder')
-                : t('models.selectModelPlaceholder')
-            } />
-          </SelectTrigger>
-          <SelectContent>
-            {!config.required && (
-              <SelectItem value={NONE_VALUE}>
-                <span className="text-muted-foreground">
-                  {config.fallsBackToChat ? t('models.noneFallbackToChat') : t('models.noneOption')}
-                </span>
-              </SelectItem>
-            )}
-            {available.sort((a, b) => a.name.localeCompare(b.name)).map(model => (
-              <SelectItem key={model.id} value={model.id}>
-                <div className="flex items-center justify-between w-full">
-                  <span>{model.name}</span>
-                  <span className="text-xs text-muted-foreground ml-2">{model.provider}</span>
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {!config.required && currentValue && (
-          <Button variant="ghost" size="icon" onClick={() => onChange(config.key, "")} className="h-8 w-8 shrink-0">
-            <X className="h-3 w-3" />
-          </Button>
-        )}
-      </div>
+      <ModelPicker
+        id={config.id}
+        modelType={config.modelType}
+        value={currentValue || ''}
+        onChange={(v) => onChange(config.key, v)}
+        placeholder={
+          config.required && !isValid && available.length > 0
+            ? t('models.requiredModelPlaceholder')
+            : undefined
+        }
+        triggerClassName={
+          config.required && !isValid && available.length > 0 ? 'border-destructive' : undefined
+        }
+        showReasoning={config.modelType === 'language'}
+        reasoningLevel={reasoningLevel}
+        onReasoningChange={
+          onReasoningChange ? (level) => onReasoningChange(config.key, level) : undefined
+        }
+        onClear={config.required ? undefined : () => onChange(config.key, '')}
+        clearLabel={
+          config.fallsBackToChat ? t('models.noneFallbackToChat') : t('models.noneOption')
+        }
+      />
       {emptyOptionalHint && (
         <p className="text-[10px] text-muted-foreground leading-tight italic">{emptyOptionalHint}</p>
       )}
@@ -161,7 +150,7 @@ export function DefaultModelSelectors({
 
   const defaultConfigs = [...primaryConfigs, ...advancedConfigs]
 
-  const handleChange = (key: keyof ModelDefaults, value: string) => {
+  const handleChange = (key: ModelSlotKey, value: string) => {
     if (key === 'default_embedding_model') {
       const current = defaults[key]
       if (current && current !== value) {
@@ -171,6 +160,15 @@ export function DefaultModelSelectors({
       }
     }
     updateDefaults.mutate({ [key]: value || null })
+  }
+
+  // Per-slot reasoning (thinking) level. model_args is a whole dict on the
+  // API, so merge locally and send the full map; null clears the slot.
+  const handleReasoningChange = (key: ModelSlotKey, level: ReasoningLevel | null) => {
+    const next: Record<string, ReasoningLevel> = { ...(defaults.model_args ?? {}) }
+    if (level === null) delete next[key]
+    else next[key] = level
+    updateDefaults.mutate({ model_args: next })
   }
 
   const handleConfirmEmbeddingChange = () => {
@@ -228,6 +226,8 @@ export function DefaultModelSelectors({
               currentValue={watch(config.key) || undefined}
               onChange={handleChange}
               chatModelName={chatModelName}
+              reasoningLevel={defaults.model_args?.[config.key]}
+              onReasoningChange={handleReasoningChange}
             />
           ))}
         </div>
@@ -245,6 +245,8 @@ export function DefaultModelSelectors({
                   onChange={handleChange}
                   showDescription
                   chatModelName={chatModelName}
+                  reasoningLevel={defaults.model_args?.[config.key]}
+                  onReasoningChange={handleReasoningChange}
                 />
               ))}
             </div>

@@ -1,0 +1,4 @@
+-- Migration 26: per-transformation reasoning (thinking) level.
+-- Stores off/low/medium/xhigh (validated in the API layer); NONE means the
+-- transformation follows the default-model slot level from Settings -> Models.
+DEFINE FIELD IF NOT EXISTS reasoning_level ON TABLE transformation TYPE option<string>;

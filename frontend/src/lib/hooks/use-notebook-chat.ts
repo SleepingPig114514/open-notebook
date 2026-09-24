@@ -33,6 +33,8 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
   const [charCount, setCharCount] = useState<number>(0)
   // Pending model override for when user changes model before a session exists
   const [pendingModelOverride, setPendingModelOverride] = useState<string | null>(null)
+  // Pending reasoning level for when user changes it before a session exists
+  const [pendingReasoningLevel, setPendingReasoningLevel] = useState<string | null>(null)
 
   // Fetch sessions for this notebook
   const {
@@ -173,7 +175,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
   }, [notebookId, sources, notes, contextSelections])
 
   // Send message (synchronous, no streaming)
-  const sendMessage = useCallback(async (message: string, modelOverride?: string) => {
+  const sendMessage = useCallback(async (message: string, modelOverride?: string, reasoningLevel?: string | null) => {
     let sessionId = currentSessionId
 
     // Auto-create session if none exists
@@ -186,12 +188,14 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
           notebook_id: notebookId,
           title: defaultTitle,
           // Include pending model override when creating session
-          model_override: pendingModelOverride ?? undefined
+          model_override: pendingModelOverride ?? undefined,
+          reasoning_level: reasoningLevel ?? pendingReasoningLevel ?? undefined
         })
         sessionId = newSession.id
         setCurrentSessionId(sessionId)
-        // Clear pending model override now that it's applied to the session
+        // Clear pending overrides now that they're applied to the session
         setPendingModelOverride(null)
+        setPendingReasoningLevel(null)
         queryClient.invalidateQueries({
           queryKey: QUERY_KEYS.notebookChatSessions(notebookId)
         })
@@ -219,7 +223,8 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
         session_id: sessionId,
         message,
         context,
-        model_override: modelOverride ?? (currentSession?.model_override ?? undefined)
+        model_override: modelOverride ?? (currentSession?.model_override ?? undefined),
+        reasoning_level: reasoningLevel ?? (currentSession?.reasoning_level ?? undefined)
       })
 
       // Update messages with API response
@@ -241,6 +246,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     currentSessionId,
     currentSession,
     pendingModelOverride,
+    pendingReasoningLevel,
     buildContext,
     refetchCurrentSession,
     queryClient,
@@ -287,6 +293,18 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     }
   }, [currentSessionId, updateSessionMutation])
 
+  // Set reasoning level - handles both existing sessions and pending state
+  const setReasoningLevel = useCallback((level: string | null) => {
+    if (currentSessionId) {
+      updateSessionMutation.mutate({
+        sessionId: currentSessionId,
+        data: { reasoning_level: level }
+      })
+    } else {
+      setPendingReasoningLevel(level)
+    }
+  }, [currentSessionId, updateSessionMutation])
+
   // Update token/char counts when context selections change
   useEffect(() => {
     const updateContextCounts = async () => {
@@ -310,6 +328,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     tokenCount,
     charCount,
     pendingModelOverride,
+    pendingReasoningLevel,
 
     // Actions
     createSession,
@@ -318,6 +337,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     switchSession,
     sendMessage,
     setModelOverride,
+    setReasoningLevel,
     refetchSessions
   }
 }

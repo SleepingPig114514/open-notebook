@@ -38,6 +38,9 @@ interface ChatPanelProps {
   onSendMessage: (message: string, modelOverride?: string) => void
   modelOverride?: string
   onModelChange?: (model?: string) => void
+  /** Session-level reasoning (thinking) level; undefined/null = follow slot default. */
+  reasoningLevel?: string | null
+  onReasoningChange?: (level: string | null) => void
   // Session management props
   sessions?: BaseChatSession[]
   currentSessionId?: string | null
@@ -62,6 +65,8 @@ export function ChatPanel({
   onSendMessage,
   modelOverride,
   onModelChange,
+  reasoningLevel,
+  onReasoningChange,
   sessions = [],
   currentSessionId,
   onCreateSession,
@@ -221,6 +226,8 @@ export function ChatPanel({
           isStreaming={isStreaming}
           modelOverride={modelOverride}
           onModelChange={onModelChange}
+          reasoningLevel={reasoningLevel}
+          onReasoningChange={onReasoningChange}
         />
       </CardContent>
     </Card>
@@ -236,13 +243,17 @@ interface ChatComposerProps {
   isStreaming: boolean
   modelOverride?: string
   onModelChange?: (model?: string) => void
+  reasoningLevel?: string | null
+  onReasoningChange?: (level: string | null) => void
 }
 
 function ChatComposer({
   onSendMessage,
   isStreaming,
   modelOverride,
-  onModelChange
+  onModelChange,
+  reasoningLevel,
+  onReasoningChange
 }: ChatComposerProps) {
   const { t } = useTranslation()
   const chatInputId = useId()
@@ -280,6 +291,8 @@ function ChatComposer({
             currentModel={modelOverride}
             onModelChange={onModelChange}
             disabled={isStreaming}
+            reasoningLevel={reasoningLevel}
+            onReasoningChange={onReasoningChange}
           />
         </div>
       )}

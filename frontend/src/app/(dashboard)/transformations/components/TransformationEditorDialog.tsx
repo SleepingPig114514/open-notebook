@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useMemo } from 'react'
+import { useEffect, useId } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -11,25 +11,18 @@ import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { MarkdownEditor } from '@/components/ui/markdown-editor'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { ModelPicker } from '@/components/common/ModelPicker'
+import { ReasoningLevel } from '@/lib/types/models'
 import {
   useCreateTransformation,
   useUpdateTransformation,
   useTransformation,
 } from '@/lib/hooks/use-transformations'
-import { useModels } from '@/lib/hooks/use-models'
 import { Transformation } from '@/lib/types/transformations'
 import { useQueryClient } from '@tanstack/react-query'
 import { TRANSFORMATION_QUERY_KEYS } from '@/lib/hooks/use-transformations'
 import { useTranslation } from '@/lib/hooks/use-translation'
 
-const DEFAULT_MODEL_VALUE = '__default_transformation_model__'
 
 const transformationSchema = z.object({
   name: z.string().min(1),
@@ -38,6 +31,7 @@ const transformationSchema = z.object({
   prompt: z.string().min(1),
   apply_default: z.boolean().optional(),
   model_id: z.string().nullable().optional(),
+  reasoning_level: z.string().nullable().optional(),
 })
 
 type TransformationFormData = z.infer<typeof transformationSchema>
@@ -60,11 +54,6 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
   const { data: fetchedTransformation, isLoading } = useTransformation(transformation?.id ?? '', {
     enabled: open && Boolean(transformation?.id),
   })
-  const { data: models = [], isLoading: isLoadingModels } = useModels()
-  const languageModels = useMemo(
-    () => models.filter((model) => model.type === 'language'),
-    [models]
-  )
   const createTransformation = useCreateTransformation()
   const updateTransformation = useUpdateTransformation()
   const queryClient = useQueryClient()
@@ -74,6 +63,8 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
     handleSubmit,
     formState: { errors },
     reset,
+    watch,
+    setValue,
   } = useForm<TransformationFormData>({
     resolver: zodResolver(transformationSchema),
     defaultValues: {
@@ -83,8 +74,11 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
       prompt: '',
       apply_default: false,
       model_id: null,
+      reasoning_level: null,
     },
   })
+
+  const watchReasoning = (watch('reasoning_level') as ReasoningLevel | null) ?? null
 
   useEffect(() => {
     if (!open) {
@@ -95,6 +89,7 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
         prompt: '',
         apply_default: false,
         model_id: null,
+        reasoning_level: null,
       })
       return
     }
@@ -107,6 +102,7 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
       prompt: source?.prompt ?? '',
       apply_default: source?.apply_default ?? false,
       model_id: source?.model_id ?? null,
+      reasoning_level: source?.reasoning_level ?? null,
     })
   }, [open, transformation, fetchedTransformation, reset])
 
@@ -121,6 +117,7 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
           prompt: data.prompt,
           apply_default: Boolean(data.apply_default),
           model_id: data.model_id || null,
+          reasoning_level: data.reasoning_level || null,
         },
       })
       queryClient.invalidateQueries({ queryKey: TRANSFORMATION_QUERY_KEYS.transformation(transformation.id) })
@@ -132,6 +129,7 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
         prompt: data.prompt,
         apply_default: Boolean(data.apply_default),
         model_id: data.model_id || null,
+        reasoning_level: data.reasoning_level || null,
       })
     }
 
@@ -210,30 +208,18 @@ export function TransformationEditorDialog({ open, onOpenChange, transformation 
                       control={control}
                       name="model_id"
                       render={({ field }) => (
-                        <Select
-                          name={field.name}
-                          value={field.value ?? DEFAULT_MODEL_VALUE}
-                          onValueChange={(value) =>
-                            field.onChange(
-                              value === DEFAULT_MODEL_VALUE ? null : value
-                            )
-                          }
-                          disabled={isLoadingModels}
-                        >
-                          <SelectTrigger id={modelId} className="w-full">
-                            <SelectValue placeholder={t('transformations.selectModel')} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value={DEFAULT_MODEL_VALUE}>
-                              {t('transformations.systemDefault')}
-                            </SelectItem>
-                            {languageModels.map((model) => (
-                              <SelectItem key={model.id} value={model.id}>
-                                {model.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <ModelPicker
+                          id={modelId}
+                          modelType="language"
+                          value={field.value ?? ''}
+                          onChange={(modelIdValue) => field.onChange(modelIdValue || null)}
+                          onClear={() => field.onChange(null)}
+                          clearLabel={t('transformations.systemDefault')}
+                          placeholder={t('transformations.selectModel')}
+                          showReasoning
+                          reasoningLevel={watchReasoning}
+                          onReasoningChange={(level) => setValue('reasoning_level', level, { shouldDirty: true })}
+                        />
                       )}
                     />
                   </div>

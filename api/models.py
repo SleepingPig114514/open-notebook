@@ -86,6 +86,34 @@ class AskRequest(NotebookScopeMixin):
     strategy_model: str = Field(..., description="Model ID for query strategy")
     answer_model: str = Field(..., description="Model ID for individual answers")
     final_answer_model: str = Field(..., description="Model ID for final answer")
+    # Optional per-request reasoning (thinking) levels, one per Ask stage.
+    # Absent/None = fall back to the tools-slot level in Settings -> Models.
+    strategy_reasoning_level: Optional[str] = Field(
+        None, description="Reasoning level (off/low/medium/xhigh) for the strategy model"
+    )
+    answer_reasoning_level: Optional[str] = Field(
+        None, description="Reasoning level (off/low/medium/xhigh) for the answer model"
+    )
+    final_answer_reasoning_level: Optional[str] = Field(
+        None, description="Reasoning level (off/low/medium/xhigh) for the final answer model"
+    )
+
+    @field_validator(
+        "strategy_reasoning_level",
+        "answer_reasoning_level",
+        "final_answer_reasoning_level",
+    )
+    @classmethod
+    def _validate_reasoning_level(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        from open_notebook.ai.thinking import REASONING_LEVELS
+
+        if value not in REASONING_LEVELS:
+            raise ValueError(
+                f"Invalid reasoning level {value!r}. Allowed: {sorted(REASONING_LEVELS)}"
+            )
+        return value
 
 
 class AskResponse(BaseModel):
@@ -126,6 +154,33 @@ class DefaultModelsResponse(BaseModel):
     default_speech_to_text_model: Optional[str] = None
     default_embedding_model: Optional[str] = None
     default_tools_model: Optional[str] = None
+    # Per-slot reasoning (thinking) level for the four language slots.
+    # Keys: default_chat_model / default_transformation_model /
+    # default_tools_model / large_context_model. Values: off/low/medium/xhigh.
+    # Absent key = follow the provider's factory default.
+    model_args: Optional[Dict[str, str]] = None
+
+    @field_validator("model_args")
+    @classmethod
+    def _validate_model_args(
+        cls, value: Optional[Dict[str, str]]
+    ) -> Optional[Dict[str, str]]:
+        if value is None:
+            return None
+        from open_notebook.ai.thinking import REASONING_LEVELS, SLOT_FIELDS
+
+        for slot, level in value.items():
+            if slot not in SLOT_FIELDS.values():
+                raise ValueError(
+                    f"Unknown model slot in model_args: {slot!r}. "
+                    f"Allowed: {sorted(SLOT_FIELDS.values())}"
+                )
+            if level not in REASONING_LEVELS:
+                raise ValueError(
+                    f"Invalid reasoning level {level!r} for {slot}. "
+                    f"Allowed: {sorted(REASONING_LEVELS)}"
+                )
+        return value
 
 
 class ProviderAvailabilityResponse(BaseModel):
@@ -138,6 +193,8 @@ class ProviderAvailabilityResponse(BaseModel):
 
 # Transformations API models
 class TransformationCreate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     name: str = Field(..., description="Transformation name")
     title: str = Field(..., description="Display title for the transformation")
     description: str = Field(
@@ -150,9 +207,28 @@ class TransformationCreate(BaseModel):
     model_id: Optional[str] = Field(
         None, description="Model ID to use by default for this transformation"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Reasoning level (off/low/medium/xhigh) for this transformation",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_reasoning_level(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        from open_notebook.ai.thinking import REASONING_LEVELS
+
+        if value not in REASONING_LEVELS:
+            raise ValueError(
+                f"Invalid reasoning level {value!r}. Allowed: {sorted(REASONING_LEVELS)}"
+            )
+        return value
 
 
 class TransformationUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     name: Optional[str] = Field(None, description="Transformation name")
     title: Optional[str] = Field(
         None, description="Display title for the transformation"
@@ -167,9 +243,28 @@ class TransformationUpdate(BaseModel):
     model_id: Optional[str] = Field(
         None, description="Model ID to use by default for this transformation"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Reasoning level (off/low/medium/xhigh); null clears it",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_reasoning_level(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        from open_notebook.ai.thinking import REASONING_LEVELS
+
+        if value not in REASONING_LEVELS:
+            raise ValueError(
+                f"Invalid reasoning level {value!r}. Allowed: {sorted(REASONING_LEVELS)}"
+            )
+        return value
 
 
 class TransformationResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     id: str
     name: str
     title: str
@@ -177,6 +272,7 @@ class TransformationResponse(BaseModel):
     prompt: str
     apply_default: bool
     model_id: Optional[str] = None
+    reasoning_level: Optional[str] = None
     created: str
     updated: str
 
@@ -191,6 +287,24 @@ class TransformationExecuteRequest(BaseModel):
     model_id: Optional[str] = Field(
         None, description="Model ID to use for this transformation run"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Reasoning level for this run; falls back to the "
+        "transformation's stored level, then the transformation slot level",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_reasoning_level(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        from open_notebook.ai.thinking import REASONING_LEVELS
+
+        if value not in REASONING_LEVELS:
+            raise ValueError(
+                f"Invalid reasoning level {value!r}. Allowed: {sorted(REASONING_LEVELS)}"
+            )
+        return value
 
 
 class TransformationExecuteResponse(BaseModel):
@@ -249,6 +363,35 @@ class EmbedRequest(BaseModel):
     )
 
 
+class EmbedCancelRequest(BaseModel):
+    item_id: str = Field(
+        ..., description="Source ID whose active embedding jobs should be cancelled"
+    )
+
+
+class EmbedCancelResponse(BaseModel):
+    success: bool = Field(..., description="Whether the cancellation was processed")
+    cancelled_commands: int = Field(
+        ..., description="Number of active embedding commands cancelled"
+    )
+    message: str = Field(..., description="Result message")
+
+
+class EmbedActiveStatusRequest(BaseModel):
+    item_ids: List[str] = Field(
+        ..., description="Source IDs to check for in-flight vectorization jobs"
+    )
+
+
+class EmbedActiveStatusResponse(BaseModel):
+    active_ids: List[str] = Field(
+        ..., description="Source IDs with a queued/running embed_source job"
+    )
+    cancel_requested_ids: List[str] = Field(
+        ..., description="Subset of active IDs where cancellation was requested"
+    )
+
+
 class EmbedResponse(BaseModel):
     success: bool = Field(..., description="Whether embedding was successful")
     message: str = Field(..., description="Result message")
@@ -261,9 +404,9 @@ class EmbedResponse(BaseModel):
 
 # Rebuild request/response models
 class RebuildRequest(BaseModel):
-    mode: Literal["existing", "all"] = Field(
+    mode: Literal["existing", "all", "missing"] = Field(
         ...,
-        description="Rebuild mode: 'existing' only re-embeds items with embeddings, 'all' embeds everything",
+        description="Rebuild mode: 'existing' only re-embeds items with embeddings, 'all' embeds everything, 'missing' embeds only items with content but no embedding",
     )
     include_sources: bool = Field(True, description="Include sources in rebuild")
     include_notes: bool = Field(True, description="Include notes in rebuild")
@@ -403,6 +546,25 @@ class SourceResponse(BaseModel):
     notebooks: Optional[List[str]] = None
 
 
+class FolderImportRequest(BaseModel):
+    path: str = Field(..., description="Absolute path of the local folder to import")
+    notebooks: List[str] = Field(
+        default_factory=list, max_length=50, description="Notebook IDs to add sources to"
+    )
+    embed: bool = Field(False, description="Whether to embed content for vector search")
+    recursive: bool = Field(True, description="Import subfolders recursively")
+
+
+class FolderImportResponse(BaseModel):
+    folder: str
+    added: int
+    updated: int
+    deleted: int
+    unchanged: int
+    unsupported: int
+    details: Dict[str, List[str]]
+
+
 class SourceListResponse(BaseModel):
     id: str
     title: Optional[str]
@@ -418,6 +580,9 @@ class SourceListResponse(BaseModel):
     command_id: Optional[str] = None
     status: Optional[str] = None
     processing_info: Optional[Dict[str, Any]] = None
+    # Vectorization job activity (embed_source commands in new/running state)
+    embedding_active: bool = False
+    embedding_cancel_requested: bool = False
 
 
 # Insights API models

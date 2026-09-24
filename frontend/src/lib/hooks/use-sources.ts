@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
+import { toast as sonnerToast } from 'sonner'
 import { sourcesApi } from '@/lib/api/sources'
+import { embeddingApi } from '@/lib/api/embedding'
 import { QUERY_KEYS } from '@/lib/api/query-client'
 import { useToast } from '@/lib/hooks/use-toast'
 import { useTranslation } from '@/lib/hooks/use-translation'
@@ -14,6 +16,39 @@ import {
 } from '@/lib/types/api'
 
 const NOTEBOOK_SOURCES_PAGE_SIZE = 30
+
+// Limit concurrent writes to avoid overwhelming SurrealDB: it has no
+// connection pool (each request opens its own), and firing dozens of DELETEs
+// at once produces write-transaction contention where some records survive
+// even though every response is 200.
+const BULK_CONCURRENCY = 4
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+  onProgress?: (done: number, total: number) => void
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length)
+  let next = 0
+  let done = 0
+  async function run() {
+    while (true) {
+      const i = next++
+      if (i >= items.length) return
+      try {
+        results[i] = { status: 'fulfilled', value: await worker(items[i]) }
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason }
+      }
+      done += 1
+      onProgress?.(done, items.length)
+    }
+  }
+  const runners = Array.from({ length: Math.min(limit, items.length) }, () => run())
+  await Promise.all(runners)
+  return results
+}
 
 export function useSources(notebookId?: string) {
   return useQuery({
@@ -298,9 +333,10 @@ export function useAddSourcesToNotebook() {
     mutationFn: async ({ notebookId, sourceIds }: { notebookId: string; sourceIds: string[] }) => {
       const { notebooksApi } = await import('@/lib/api/notebooks')
 
-      // Use Promise.allSettled to handle partial failures gracefully
-      const results = await Promise.allSettled(
-        sourceIds.map(sourceId => notebooksApi.addSource(notebookId, sourceId))
+      // Limit concurrency to keep SurrealDB write transactions from contending
+      const results = await runWithConcurrency(
+        sourceIds, BULK_CONCURRENCY,
+        sourceId => notebooksApi.addSource(notebookId, sourceId)
       )
 
       // Count successes and failures
@@ -377,6 +413,222 @@ export function useRemoveSourceFromNotebook() {
       toast({
         title: t('common.error'),
         description: getApiErrorMessage(error, (key) => t(key), t('sources.failedToRemoveSourceFromNotebook')),
+        variant: 'destructive',
+      })
+    },
+  })
+}
+
+/**
+ * Bulk-unlink sources from a notebook. Calls the per-source endpoint for each
+ * id (same pattern as useAddSourcesToNotebook) and reports partial failures;
+ * the sources stay in the global source library and disk files are untouched.
+ */
+export function useBulkRemoveSourceFromNotebook() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: async ({ notebookId, sourceIds }: { notebookId: string; sourceIds: string[] }) => {
+      const { notebooksApi } = await import('@/lib/api/notebooks')
+      const results = await runWithConcurrency(
+        sourceIds, BULK_CONCURRENCY,
+        sourceId => notebooksApi.removeSource(notebookId, sourceId)
+      )
+      const successes = results.filter(r => r.status === 'fulfilled').length
+      const failures = results.filter(r => r.status === 'rejected').length
+      return { successes, failures, total: sourceIds.length }
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['sources'] })
+      if (result.failures === 0) {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkRemovedNotebookSuccess', { count: result.successes }),
+        })
+      } else if (result.successes === 0) {
+        toast({
+          title: t('common.error'),
+          description: t('sources.bulkFailed'),
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkPartialFail', {
+            success: result.successes.toString(),
+            failed: result.failures.toString(),
+          }),
+        })
+      }
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: t('common.error'),
+        description: getApiErrorMessage(error, (key) => t(key), t('sources.bulkFailed')),
+        variant: 'destructive',
+      })
+    },
+  })
+}
+
+/**
+ * Bulk-remove sources from the whole library. DELETEs are issued STRICTLY
+ * ONE AT A TIME (concurrency = 1): SurrealDB silently loses concurrent
+ * deletes on the indexed `source` table — even 2 in flight can leave 1
+ * survivor while every response is 200. After each delete we re-fetch to
+ * confirm the record is gone and retry if not. External originals are never
+ * deleted (Source.delete only unlinks managed uploads).
+ */
+const DELETE_VERIFY_ATTEMPTS = 3
+
+export function useBulkDeleteSources() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: async ({ sourceIds }: { sourceIds: string[] }) => {
+      const failedIds: string[] = []
+
+      const verifyDelete = async (sourceId: string) => {
+        for (let attempt = 1; attempt <= DELETE_VERIFY_ATTEMPTS; attempt++) {
+          await sourcesApi.delete(sourceId)
+          // Confirm gone: a 404 means it no longer exists (success).
+          try {
+            await sourcesApi.get(sourceId)
+          } catch {
+            return // 404/error -> record is gone
+          }
+          // Still present after a 200 delete: loop and retry.
+        }
+        throw new Error(`source ${sourceId} survived ${DELETE_VERIFY_ATTEMPTS} deletes`)
+      }
+
+      await runWithConcurrency(
+        sourceIds, 1,
+        async (sourceId) => {
+          try {
+            await verifyDelete(sourceId)
+          } catch (e) {
+            failedIds.push(sourceId)
+            throw e
+          }
+        },
+        (done, total) => {
+          sonnerToast.loading(t('sources.bulkDeleteInProgress'), {
+            id: 'bulk-delete-progress',
+            description: `${done} / ${total}`,
+          })
+        }
+      )
+
+      const failures = failedIds.length
+      const successes = sourceIds.length - failures
+      return { successes, failures, total: sourceIds.length }
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['sources'] })
+      sonnerToast.dismiss('bulk-delete-progress')
+      if (result.failures === 0) {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkRemovedSourcesSuccess', { count: result.successes }),
+        })
+      } else if (result.successes === 0) {
+        toast({
+          title: t('common.error'),
+          description: t('sources.bulkFailed'),
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkPartialFail', {
+            success: result.successes.toString(),
+            failed: result.failures.toString(),
+          }),
+        })
+      }
+    },
+    onError: (error: unknown) => {
+      sonnerToast.dismiss('bulk-delete-progress')
+      toast({
+        title: t('common.error'),
+        description: getApiErrorMessage(error, (key) => t(key), t('sources.bulkFailed')),
+        variant: 'destructive',
+      })
+    },
+  })
+}
+
+/**
+ * Bulk (re-)vectorize selected sources. Each call submits an independent
+ * background embed_source job via POST /api/embed - safe to re-run on
+ * already-embedded sources (embed_source deletes old chunks first).
+ * Submissions are bounded (BULK_CONCURRENCY) because every request opens
+ * its own SurrealDB connection (no pooling). Progress + success/failure
+ * counts are reported before a single cache invalidation.
+ */
+export function useBulkEmbedSources() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: async ({ sourceIds }: { sourceIds: string[] }) => {
+      let failures = 0
+      await runWithConcurrency(
+        sourceIds,
+        BULK_CONCURRENCY,
+        async (sourceId) => {
+          try {
+            await embeddingApi.embedContent(sourceId, 'source')
+          } catch (e) {
+            failures += 1
+            throw e
+          }
+        },
+        (done, total) => {
+          sonnerToast.loading(t('sources.bulkEmbedInProgress'), {
+            id: 'bulk-embed-progress',
+            description: `${done} / ${total}`,
+          })
+        }
+      )
+      const successes = sourceIds.length - failures
+      return { successes, failures, total: sourceIds.length }
+    },
+    onSuccess: (result) => {
+      sonnerToast.dismiss('bulk-embed-progress')
+      queryClient.invalidateQueries({ queryKey: ['sources'] })
+      if (result.failures === 0) {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkEmbedQueuedSuccess', { count: result.successes }),
+        })
+      } else if (result.successes === 0) {
+        toast({
+          title: t('common.error'),
+          description: t('sources.bulkFailed'),
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkPartialFail', {
+            success: result.successes.toString(),
+            failed: result.failures.toString(),
+          }),
+        })
+      }
+    },
+    onError: (error: unknown) => {
+      sonnerToast.dismiss('bulk-embed-progress')
+      toast({
+        title: t('common.error'),
+        description: getApiErrorMessage(error, (key) => t(key), t('sources.bulkFailed')),
         variant: 'destructive',
       })
     },

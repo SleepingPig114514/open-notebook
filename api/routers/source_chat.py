@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.routers._chat_shared import (
     ChatMessage,
@@ -16,6 +16,7 @@ from api.routers._chat_shared import (
     get_source_or_404,
     get_verified_source_session,
 )
+from open_notebook.ai.thinking import REASONING_LEVELS
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import ChatSession
 from open_notebook.exceptions import (
@@ -29,18 +30,46 @@ router = APIRouter()
 
 
 # Request/Response models
+def _validate_reasoning_level(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if value not in REASONING_LEVELS:
+        raise ValueError(
+            f"Invalid reasoning level {value!r}. Allowed: {sorted(REASONING_LEVELS)}"
+        )
+    return value
+
+
 class CreateSourceChatSessionRequest(BaseModel):
     source_id: str = Field(..., description="Source ID to create chat session for")
     title: Optional[str] = Field(None, description="Optional session title")
     model_override: Optional[str] = Field(
         None, description="Optional model override for this session"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Optional reasoning level (off/low/medium/xhigh) for this session",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_rl(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_reasoning_level(value)
 
 class UpdateSourceChatSessionRequest(BaseModel):
     title: Optional[str] = Field(None, description="New session title")
     model_override: Optional[str] = Field(
         None, description="Model override for this session"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Reasoning level for this session; null clears it (slot default)",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_rl(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_reasoning_level(value)
 
 class ContextIndicator(BaseModel):
     sources: List[str] = Field(
@@ -59,6 +88,9 @@ class SourceChatSessionResponse(BaseModel):
     source_id: str = Field(..., description="Source ID")
     model_override: Optional[str] = Field(
         None, description="Model override for this session"
+    )
+    reasoning_level: Optional[str] = Field(
+        None, description="Reasoning level for this session"
     )
     created: str = Field(..., description="Creation timestamp")
     updated: str = Field(..., description="Last update timestamp")
@@ -79,6 +111,15 @@ class SendMessageRequest(BaseModel):
     model_override: Optional[str] = Field(
         None, description="Optional model override for this message"
     )
+    reasoning_level: Optional[str] = Field(
+        None,
+        description="Optional reasoning level for this message (overrides session level)",
+    )
+
+    @field_validator("reasoning_level")
+    @classmethod
+    def _validate_rl(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_reasoning_level(value)
 
 @router.post(
     "/sources/{source_id}/chat/sessions", response_model=SourceChatSessionResponse
@@ -96,6 +137,7 @@ async def create_source_chat_session(
         session = ChatSession(
             title=request.title or f"Source Chat {asyncio.get_event_loop().time():.0f}",
             model_override=request.model_override,
+            reasoning_level=request.reasoning_level,
         )
         await session.save()
 
@@ -107,6 +149,7 @@ async def create_source_chat_session(
             title=session.title or "Untitled Session",
             source_id=source_id,
             model_override=session.model_override,
+            reasoning_level=session.reasoning_level,
             created=str(session.created),
             updated=str(session.updated),
             message_count=0,
@@ -162,6 +205,7 @@ async def get_source_chat_sessions(source_id: str = Path(..., description="Sourc
                             title=session_data.get("title") or "Untitled Session",
                             source_id=source_id,
                             model_override=session_data.get("model_override"),
+                            reasoning_level=session_data.get("reasoning_level"),
                             created=str(session_data.get("created")),
                             updated=str(session_data.get("updated")),
                             message_count=msg_count,
@@ -229,6 +273,7 @@ async def get_source_chat_session(
             title=session.title or "Untitled Session",
             source_id=source_id,
             model_override=getattr(session, "model_override", None),
+            reasoning_level=getattr(session, "reasoning_level", None),
             created=str(session.created),
             updated=str(session.updated),
             message_count=len(messages),
@@ -269,6 +314,8 @@ async def update_source_chat_session(
             session.title = request.title
         if request.model_override is not None:
             session.model_override = request.model_override
+        if "reasoning_level" in request.model_dump(exclude_unset=True):
+            session.reasoning_level = request.reasoning_level
 
         await session.save()
 
@@ -280,6 +327,7 @@ async def update_source_chat_session(
             title=session.title or "Untitled Session",
             source_id=source_id,
             model_override=getattr(session, "model_override", None),
+            reasoning_level=getattr(session, "reasoning_level", None),
             created=str(session.created),
             updated=str(session.updated),
             message_count=msg_count,
@@ -330,7 +378,11 @@ async def delete_source_chat_session(
 
 
 async def stream_source_chat_response(
-    session_id: str, source_id: str, message: str, model_override: Optional[str] = None
+    session_id: str,
+    source_id: str,
+    message: str,
+    model_override: Optional[str] = None,
+    reasoning_level: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream the source chat response as Server-Sent Events."""
     try:
@@ -367,7 +419,11 @@ async def stream_source_chat_response(
             lambda: source_chat_graph.invoke(
                 input=state_values,  # type: ignore[arg-type]
                 config=RunnableConfig(
-                    configurable={"thread_id": session_id, "model_id": model_override}
+                    configurable={
+                        "thread_id": session_id,
+                        "model_id": model_override,
+                        "reasoning_level": reasoning_level,
+                    }
                 ),
             )
         )
@@ -425,6 +481,12 @@ async def send_message_to_source_chat(
             session, "model_override", None
         )
 
+        # Determine reasoning level (request override takes precedence over
+        # session override; None = chat slot level)
+        reasoning_level = request.reasoning_level or getattr(
+            session, "reasoning_level", None
+        )
+
         # Update session timestamp
         await session.save()
 
@@ -435,6 +497,7 @@ async def send_message_to_source_chat(
                 source_id=full_source_id,
                 message=request.message,
                 model_override=model_override,
+                reasoning_level=reasoning_level,
             ),
             media_type="text/event-stream",
             headers={
