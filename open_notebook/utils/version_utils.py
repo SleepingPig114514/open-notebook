@@ -7,7 +7,6 @@ from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlparse
 
 import requests  # type: ignore
-import tomli
 from packaging.version import parse as parse_version
 
 

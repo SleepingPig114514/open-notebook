@@ -19,8 +19,8 @@ from pydantic import ValidationError
 from surreal_commands import execute_command_sync, submit_command
 
 from api.command_service import CommandService
-from api.folder_import_service import import_folder
 from api.credentials_service import validate_url
+from api.folder_import_service import import_folder
 from api.models import (
     AssetModel,
     CreateSourceInsightRequest,

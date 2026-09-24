@@ -137,6 +137,7 @@ class TestProvisionExplicitLevel:
 
         getter = AsyncMock(return_value=esperanto_model)
         with patch("open_notebook.ai.provision.model_manager.get_model", getter), \
+             patch("open_notebook.ai.provision.model_manager.get_default_model", getter), \
              patch(
                  "open_notebook.ai.provision.get_slot_reasoning_level",
                  AsyncMock(return_value=slot_level),

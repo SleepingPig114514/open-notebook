@@ -12,11 +12,12 @@ restriction applies because the caller explicitly chooses the folder).
 """
 
 import asyncio
+import functools
 import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, TypeVar
 
 from loguru import logger
 
@@ -179,7 +180,7 @@ async def _create_source_for_file(
 
     for notebook_id in notebook_ids:
         await _tx_retry(
-            lambda nid=notebook_id: source.add_to_notebook(nid),
+            functools.partial(source.add_to_notebook, notebook_id),
             f"link {rel_posix} to notebook",
         )
 
