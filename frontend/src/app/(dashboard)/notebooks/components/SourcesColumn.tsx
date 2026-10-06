@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
-import { Plus, FileText, Link2, ChevronDown, Loader2, ListChecks, Search, Unlink, Trash2 } from 'lucide-react'
+import { Plus, FileText, Link2, ChevronDown, Loader2, ListChecks, Search, Unlink, Trash2, Lightbulb } from 'lucide-react'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { EmptyState } from '@/components/common/EmptyState'
 import { AddSourceDialog } from '@/components/sources/AddSourceDialog'
@@ -25,8 +25,10 @@ import {
   useRemoveSourceFromNotebook,
   useBulkRemoveSourceFromNotebook,
   useBulkDeleteSources,
+  useBulkGenerateInsights,
 } from '@/lib/hooks/use-sources'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { BulkInsightsDialog } from '@/components/sources/BulkInsightsDialog'
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import { ContextMode } from '../[id]/page'
 import type { SourceBulkAction } from '@/lib/utils/source-context'
@@ -74,6 +76,7 @@ export function SourcesColumn({
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [bulkRemoveDialogOpen, setBulkRemoveDialogOpen] = useState(false)
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false)
+  const [bulkInsightsDialogOpen, setBulkInsightsDialogOpen] = useState(false)
 
   const { openModal } = useModalManager()
   const deleteSource = useDeleteSource()
@@ -81,6 +84,7 @@ export function SourcesColumn({
   const removeFromNotebook = useRemoveSourceFromNotebook()
   const bulkRemoveFromNotebook = useBulkRemoveSourceFromNotebook()
   const bulkDeleteSources = useBulkDeleteSources()
+  const bulkGenerateInsights = useBulkGenerateInsights()
 
   // Plain keyword filter over the loaded sources: matches title/path/topics/URL.
   // Deduplicate by id to guard against pagination bugs causing the same source
@@ -157,6 +161,20 @@ export function SourcesColumn({
       onRefresh?.()
     } catch (error) {
       console.error('Bulk remove from sources failed:', error)
+    }
+  }
+
+  const handleBulkInsightsConfirm = async (transformationId: string) => {
+    if (selectedIds.length === 0) return
+    try {
+      await bulkGenerateInsights.mutateAsync({
+        sourceIds: selectedIds,
+        transformationId,
+      })
+      setBulkInsightsDialogOpen(false)
+      resetBulkSelection()
+    } catch (error) {
+      console.error('Bulk insight generation failed:', error)
     }
   }
 
@@ -332,6 +350,11 @@ export function SourcesColumn({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => setBulkInsightsDialogOpen(true)}>
+                      <Lightbulb className="h-4 w-4 mr-2" />
+                      {t('sources.bulkGenerateInsights')}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => setBulkRemoveDialogOpen(true)}>
                       <Unlink className="h-4 w-4 mr-2" />
                       {t('sources.removeFromNotebook')}
@@ -463,6 +486,14 @@ export function SourcesColumn({
         onConfirm={handleBulkDeleteConfirm}
         isLoading={bulkDeleteSources.isPending}
         confirmVariant="destructive"
+      />
+
+      <BulkInsightsDialog
+        open={bulkInsightsDialogOpen}
+        onOpenChange={setBulkInsightsDialogOpen}
+        sourceCount={selectedIds.length}
+        onConfirm={handleBulkInsightsConfirm}
+        isLoading={bulkGenerateInsights.isPending}
       />
     </>
   )

@@ -8,7 +8,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { EmptyState } from '@/components/common/EmptyState'
 import { AppShell } from '@/components/layout/AppShell'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
-import { FileText, Trash2, ArrowDown, ArrowUp, ArrowUpDown, Plus, Search, Database, Square } from 'lucide-react'
+import { FileText, Trash2, ArrowDown, ArrowUp, ArrowUpDown, Plus, Search, Database, Square, Lightbulb } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -19,8 +19,9 @@ import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { getApiErrorKey } from '@/lib/utils/error-handler'
 import { AddSourceDialog } from '@/components/sources/AddSourceDialog'
+import { BulkInsightsDialog } from '@/components/sources/BulkInsightsDialog'
 import { embeddingApi } from '@/lib/api/embedding'
-import { useBulkDeleteSources, useBulkEmbedSources } from '@/lib/hooks/use-sources'
+import { useBulkDeleteSources, useBulkEmbedSources, useBulkGenerateInsights } from '@/lib/hooks/use-sources'
 
 export default function SourcesPage() {
   const { t, language } = useTranslation()
@@ -58,10 +59,12 @@ export default function SourcesPage() {
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false)
   const [bulkEmbedDialogOpen, setBulkEmbedDialogOpen] = useState(false)
   const [bulkStopDialogOpen, setBulkStopDialogOpen] = useState(false)
+  const [bulkInsightsDialogOpen, setBulkInsightsDialogOpen] = useState(false)
   // Per-row in-flight cancel requests (button disabled while the POST runs).
   const [stoppingEmbedIds, setStoppingEmbedIds] = useState<Set<string>>(new Set())
   const bulkDeleteSources = useBulkDeleteSources()
   const bulkEmbedSources = useBulkEmbedSources()
+  const bulkGenerateInsights = useBulkGenerateInsights()
 
   // Sources with a vectorization job in flight (new/running embed_source
   // command). While non-empty, poll the lightweight active-status endpoint
@@ -446,6 +449,20 @@ export default function SourcesPage() {
     }
   }
 
+  const handleBulkInsightsConfirm = async (transformationId: string) => {
+    if (selectedIds.length === 0) return
+    try {
+      await bulkGenerateInsights.mutateAsync({
+        sourceIds: selectedIds,
+        transformationId,
+      })
+      setBulkInsightsDialogOpen(false)
+      setSelectedIds([])
+    } catch (err) {
+      console.error('Bulk insight generation failed:', err)
+    }
+  }
+
   // Selected sources that currently have a vectorization job in flight.
   const selectedActiveIds = useMemo(
     () => selectedIds.filter((id) => activeEmbedIds.includes(id)),
@@ -562,6 +579,16 @@ export default function SourcesPage() {
             >
               <Database className="h-3.5 w-3.5 mr-1" />
               {t('sources.bulkEmbedSelected', { count: selectedIds.length })}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs shrink-0"
+              disabled={selectedIds.length === 0 || bulkGenerateInsights.isPending}
+              onClick={() => setBulkInsightsDialogOpen(true)}
+            >
+              <Lightbulb className="h-3.5 w-3.5 mr-1" />
+              {t('sources.bulkInsightsSelected', { count: selectedIds.length })}
             </Button>
             {selectedActiveIds.length > 0 && (
               <Button
@@ -838,6 +865,14 @@ export default function SourcesPage() {
         confirmText={t('sources.bulkEmbedConfirmTitle')}
         onConfirm={handleBulkEmbedConfirm}
         isLoading={bulkEmbedSources.isPending}
+      />
+
+      <BulkInsightsDialog
+        open={bulkInsightsDialogOpen}
+        onOpenChange={setBulkInsightsDialogOpen}
+        sourceCount={selectedIds.length}
+        onConfirm={handleBulkInsightsConfirm}
+        isLoading={bulkGenerateInsights.isPending}
       />
 
       <ConfirmDialog

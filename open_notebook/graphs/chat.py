@@ -11,12 +11,13 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from open_notebook.ai.provision import provision_langchain_model
-from open_notebook.config import LANGGRAPH_CHECKPOINT_FILE
+from open_notebook.config import LANGGRAPH_CHECKPOINT_FILE, LLM_TIMEOUT_SECONDS
 from open_notebook.domain.notebook import Notebook
-from open_notebook.exceptions import OpenNotebookError
-from open_notebook.utils import clean_thinking_content
+from open_notebook.exceptions import NetworkError, OpenNotebookError
+from open_notebook.utils import clean_thinking_content, token_count
 from open_notebook.utils.error_classifier import classify_error
 from open_notebook.utils.text_utils import extract_text_content
+from open_notebook.utils.timeout_utils import is_llm_timeout_error, llm_timeout_message
 
 
 class ThreadState(TypedDict):
@@ -28,6 +29,9 @@ class ThreadState(TypedDict):
 
 
 def call_model_with_messages(state: ThreadState, config: RunnableConfig) -> dict:
+    # Pre-bound so the timeout branch below can always reference it even when
+    # an error is raised before the prompt payload is assembled.
+    payload: list = []
     try:
         system_prompt = Prompter(prompt_template="chat/system").render(data=state)  # type: ignore[arg-type]
         payload = [SystemMessage(content=system_prompt)] + state.get("messages", [])
@@ -87,6 +91,13 @@ def call_model_with_messages(state: ThreadState, config: RunnableConfig) -> dict
     except OpenNotebookError:
         raise
     except Exception as e:
+        # A client-side provider timeout must stay identifiable: classify_error
+        # would flatten it into "check your network", hiding the oversized-
+        # context cause (see OPEN_NOTEBOOK_LLM_TIMEOUT_SECONDS in config.py).
+        if is_llm_timeout_error(e) and LLM_TIMEOUT_SECONDS > 0:
+            raise NetworkError(
+                llm_timeout_message(token_count(str(payload)), LLM_TIMEOUT_SECONDS)
+            ) from e
         error_class, user_message = classify_error(e)
         raise error_class(user_message) from e
 

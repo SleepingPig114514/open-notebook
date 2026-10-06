@@ -61,9 +61,19 @@ function extractHostname(hostHeader: string): string | null {
  * This allows the same Docker image to work in different deployment scenarios.
  */
 export async function GET(request: NextRequest) {
-  // Priority 1: Check if API_URL is explicitly set
-  const envApiUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL
+  // Priority 1: Check if API_URL is explicitly set. An empty string is a
+  // legitimate explicit value: it tells the browser to use relative /api/*
+  // paths (proxied to the backend by Next.js rewrites), which is required
+  // when only the frontend port is reachable, e.g. behind a single-port
+  // tunnel. NEXT_PUBLIC_API_URL keeps the old truthy-only behavior.
+  const explicitApiUrl = process.env.API_URL
+  if (explicitApiUrl !== undefined) {
+    return NextResponse.json({
+      apiUrl: explicitApiUrl,
+    })
+  }
 
+  const envApiUrl = process.env.NEXT_PUBLIC_API_URL
   if (envApiUrl) {
     return NextResponse.json({
       apiUrl: envApiUrl,

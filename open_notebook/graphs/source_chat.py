@@ -11,9 +11,9 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from open_notebook.ai.provision import provision_langchain_model
-from open_notebook.config import LANGGRAPH_CHECKPOINT_FILE
+from open_notebook.config import LANGGRAPH_CHECKPOINT_FILE, LLM_TIMEOUT_SECONDS
 from open_notebook.domain.notebook import Source, SourceInsight
-from open_notebook.exceptions import OpenNotebookError
+from open_notebook.exceptions import NetworkError, OpenNotebookError
 from open_notebook.utils import clean_thinking_content
 from open_notebook.utils.context_builder import (
     build_source_context,
@@ -21,6 +21,10 @@ from open_notebook.utils.context_builder import (
 )
 from open_notebook.utils.error_classifier import classify_error
 from open_notebook.utils.text_utils import extract_text_content
+from open_notebook.utils.timeout_utils import (
+    is_llm_timeout_error,
+    llm_timeout_message,
+)
 
 
 class SourceChatState(TypedDict):
@@ -62,6 +66,12 @@ def call_model_with_source_context(
     except OpenNotebookError:
         raise
     except Exception as e:
+        # Same as graphs/chat.py: a client-side provider timeout keeps its
+        # actionable message instead of being flattened by classify_error.
+        if is_llm_timeout_error(e) and LLM_TIMEOUT_SECONDS > 0:
+            raise NetworkError(
+                llm_timeout_message(None, LLM_TIMEOUT_SECONDS)
+            ) from e
         error_class, user_message = classify_error(e)
         raise error_class(user_message) from e
 

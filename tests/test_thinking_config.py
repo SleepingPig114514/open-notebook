@@ -16,11 +16,13 @@ class TestBuildReasoningExtraBody:
     def test_off_disables_thinking(self):
         assert build_reasoning_extra_body("off") == {"enable_thinking": False}
 
-    def test_levels_map_to_reasoning_effort(self):
+    def test_levels_map_to_thinking_budget(self):
+        from open_notebook.ai.thinking import REASONING_BUDGETS
+
         for level in REASONING_LEVELS - {"off"}:
             assert build_reasoning_extra_body(level) == {
                 "enable_thinking": True,
-                "reasoning_effort": level,
+                "thinking_budget": REASONING_BUDGETS[level],
             }
 
     def test_unset_or_invalid_sends_nothing(self):
@@ -39,7 +41,7 @@ class TestApplyReasoningLevel:
         assert model.extra_body == {
             "existing": 1,
             "enable_thinking": True,
-            "reasoning_effort": "low",
+            "thinking_budget": 4096,
         }
 
     def test_noop_without_level(self):
@@ -61,6 +63,29 @@ class TestApplyReasoningLevel:
         model = ChatOpenAI(model="qwen3.8-flash", api_key=SecretStr("not-a-real-key"))
         apply_reasoning_level(model, "off")
         assert model.extra_body == {"enable_thinking": False}
+
+    def test_max_tokens_bumped_above_thinking_budget(self):
+        # DashScope 400s when max_completion_tokens <= thinking_budget;
+        # the graph hard-coded 8192 must not survive a medium/xhigh injection.
+        from langchain_openai import ChatOpenAI
+        from open_notebook.ai.thinking import ANSWER_SLACK_TOKENS
+        from pydantic import SecretStr
+
+        model = ChatOpenAI(
+            model="qwen3.8-flash", api_key=SecretStr("not-a-real-key"), max_tokens=8192
+        )
+        apply_reasoning_level(model, "medium")
+        assert model.max_tokens == 12288 + ANSWER_SLACK_TOKENS
+
+    def test_max_tokens_untouched_when_already_large(self):
+        from langchain_openai import ChatOpenAI
+        from pydantic import SecretStr
+
+        model = ChatOpenAI(
+            model="qwen3.8-flash", api_key=SecretStr("not-a-real-key"), max_tokens=32000
+        )
+        apply_reasoning_level(model, "xhigh")
+        assert model.max_tokens == 32000
 
 
 class TestGetSlotReasoningLevel:
@@ -159,7 +184,7 @@ class TestProvisionExplicitLevel:
     async def test_invalid_explicit_falls_back_to_slot(self):
         lc = self._lc()
         result = await self._provision(None, "banana", "low", lc)
-        assert lc.extra_body == {"enable_thinking": True, "reasoning_effort": "low"}
+        assert lc.extra_body == {"enable_thinking": True, "thinking_budget": 4096}
         assert result is lc
 
     @pytest.mark.asyncio

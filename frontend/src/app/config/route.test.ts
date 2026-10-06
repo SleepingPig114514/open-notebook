@@ -36,6 +36,18 @@ describe('GET /config', () => {
     expect(body.apiUrl).toBe('https://configured.example.com')
   })
 
+  it('returns an empty apiUrl when API_URL is explicitly set to empty string', async () => {
+    // Empty string = "use relative paths via Next.js rewrites" (single-port
+    // tunnel deployments). Must win over Host-header auto-detection.
+    process.env.API_URL = ''
+    const request = makeRequest({ host: 'tunnel.example.com', 'x-forwarded-proto': 'https' })
+
+    const response = await GET(request)
+    const body = await response.json()
+
+    expect(body.apiUrl).toBe('')
+  })
+
   it('auto-detects from a well-formed Host header', async () => {
     const request = makeRequest({ host: 'notebook.example.com', 'x-forwarded-proto': 'https' })
 

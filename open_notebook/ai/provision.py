@@ -8,8 +8,10 @@ from open_notebook.ai.thinking import (
     apply_reasoning_level,
     get_slot_reasoning_level,
 )
+from open_notebook.config import LLM_TIMEOUT_SECONDS
 from open_notebook.exceptions import ConfigurationError
 from open_notebook.utils import token_count
+from open_notebook.utils.timeout_utils import apply_llm_request_timeout
 
 
 async def provision_langchain_model(
@@ -82,5 +84,9 @@ async def provision_langchain_model(
         level = await get_slot_reasoning_level(slot_type)
     if level:
         apply_reasoning_level(lc_model, level)
+
+    # Cap per-request wall time so oversized contexts fail with a clear error
+    # instead of hanging until the frontend proxy gives up (see config.py).
+    apply_llm_request_timeout(lc_model, LLM_TIMEOUT_SECONDS)
 
     return lc_model

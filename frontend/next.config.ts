@@ -20,6 +20,13 @@ const nextConfig: NextConfig = {
     // Increase proxy body size limit for file uploads (default is 10MB)
     // This allows larger files to be uploaded through the /api/* rewrite proxy to FastAPI
     proxyClientMaxBodySize: '100mb',
+    // Dev-mode rewrite proxy kills requests after 30s by default (proxy-request.js:
+    // `proxyTimeout || 30000`), which breaks slow synchronous LLM calls like
+    // /api/chat/execute: the browser gets a fake 500 while the backend keeps
+    // running and stores the reply. Align with the frontend axios budget
+    // (NEXT_PUBLIC_API_TIMEOUT_MS default, 600s). Note: 0 does NOT disable it
+    // (falls back to 30s), so a positive number is required.
+    proxyTimeout: 600000,
   } as NextConfig['experimental'],
 
   // API Rewrites: Proxy /api/* requests to FastAPI backend

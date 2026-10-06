@@ -3,6 +3,7 @@ import { useCallback, useMemo } from 'react'
 import { toast as sonnerToast } from 'sonner'
 import { sourcesApi } from '@/lib/api/sources'
 import { embeddingApi } from '@/lib/api/embedding'
+import { insightsApi } from '@/lib/api/insights'
 import { QUERY_KEYS } from '@/lib/api/query-client'
 import { useToast } from '@/lib/hooks/use-toast'
 import { useTranslation } from '@/lib/hooks/use-translation'
@@ -626,6 +627,87 @@ export function useBulkEmbedSources() {
     },
     onError: (error: unknown) => {
       sonnerToast.dismiss('bulk-embed-progress')
+      toast({
+        title: t('common.error'),
+        description: getApiErrorMessage(error, (key) => t(key), t('sources.bulkFailed')),
+        variant: 'destructive',
+      })
+    },
+  })
+}
+
+/**
+ * Bulk-generate insights: submit the chosen transformation as a
+ * run_transformation background job for every selected source. Mirrors
+ * useBulkEmbedSources: submissions are bounded (BULK_CONCURRENCY, each
+ * request opens its own SurrealDB connection), progress is reported through
+ * a loading toast, and one cache invalidation happens at the end. The LLM
+ * work itself happens in the worker queue, so the mutation resolves once
+ * all jobs are queued - insight counts keep rising as jobs finish.
+ */
+export function useBulkGenerateInsights() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: async ({
+      sourceIds,
+      transformationId,
+    }: {
+      sourceIds: string[]
+      transformationId: string
+    }) => {
+      let failures = 0
+      await runWithConcurrency(
+        sourceIds,
+        BULK_CONCURRENCY,
+        async (sourceId) => {
+          try {
+            await insightsApi.create(sourceId, { transformation_id: transformationId })
+          } catch (e) {
+            failures += 1
+            throw e
+          }
+        },
+        (done, total) => {
+          sonnerToast.loading(t('sources.bulkInsightsInProgress'), {
+            id: 'bulk-insights-progress',
+            description: `${done} / ${total}`,
+          })
+        }
+      )
+      const successes = sourceIds.length - failures
+      return { successes, failures, total: sourceIds.length }
+    },
+    onSuccess: (result) => {
+      sonnerToast.dismiss('bulk-insights-progress')
+      queryClient.invalidateQueries({ queryKey: ['sources'] })
+      if (result.failures === 0) {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkInsightsQueuedSuccess', {
+            count: result.successes,
+          }),
+        })
+      } else if (result.successes === 0) {
+        toast({
+          title: t('common.error'),
+          description: t('sources.bulkFailed'),
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: t('common.success'),
+          description: t('sources.bulkPartialFail', {
+            success: result.successes.toString(),
+            failed: result.failures.toString(),
+          }),
+        })
+      }
+    },
+    onError: (error: unknown) => {
+      sonnerToast.dismiss('bulk-insights-progress')
       toast({
         title: t('common.error'),
         description: getApiErrorMessage(error, (key) => t(key), t('sources.bulkFailed')),

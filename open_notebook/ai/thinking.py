@@ -10,11 +10,18 @@ time.
 Level -> DashScope/OpenAI-compatible parameter mapping:
 
 - ``off``                -> ``{"enable_thinking": false}``
-- ``low/medium/xhigh``   -> ``{"enable_thinking": true, "reasoning_effort": <level>}``
+- ``low/medium/xhigh``   -> ``{"enable_thinking": true, "thinking_budget": <tokens>}``
 - ``default`` / missing  -> nothing is sent (provider factory default)
 
-``reasoning_effort`` and ``thinking_budget`` must not be sent together; this
-module only ever emits ``reasoning_effort``.
+Why ``thinking_budget`` and not ``reasoning_effort``: on the qwen3.x
+endpoints the server expands ``reasoning_effort`` into an internal thinking
+budget (medium -> 16k/32k depending on model) while our graphs hard-code
+``max_tokens=8192``. DashScope rejects any request where
+``max_completion_tokens <= thinking_budget`` with a 400
+(invalid_parameter_error). Sending an explicit budget keeps the two numbers
+in our control; ``apply_reasoning_level`` then raises the model instance's
+max_tokens above the budget when needed. ``reasoning_effort`` and
+``thinking_budget`` must never be sent together.
 """
 
 from typing import Any, Dict, Optional
@@ -23,6 +30,16 @@ from loguru import logger
 
 # Levels accepted by qwen3.7/3.8 hybrid-thinking models (plus "off").
 REASONING_LEVELS = frozenset({"off", "low", "medium", "xhigh"})
+
+# Explicit per-level thinking budgets. Chosen so each value lands inside the
+# DashScope reverse-mapping bands (0-4096 low, 4097-16384 medium,
+# 16385-262144 xhigh) and stays below hard-coded graph max_tokens after the
+# bump below. xhigh is capped at 24576 (server default would exceed what
+# flash-class models can answer within).
+REASONING_BUDGETS: Dict[str, int] = {"low": 4096, "medium": 12288, "xhigh": 24576}
+
+# Token room kept for the answer when max_tokens must grow past a budget.
+ANSWER_SLACK_TOKENS = 4096
 
 
 def build_reasoning_extra_body(level: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -34,7 +51,7 @@ def build_reasoning_extra_body(level: Optional[str]) -> Optional[Dict[str, Any]]
         return None
     if level == "off":
         return {"enable_thinking": False}
-    return {"enable_thinking": True, "reasoning_effort": level}
+    return {"enable_thinking": True, "thinking_budget": REASONING_BUDGETS[level]}
 
 
 # DefaultModels field for each provisionable slot type.
@@ -81,6 +98,11 @@ def apply_reasoning_level(lc_model: Any, level: Optional[str]) -> None:
 
     Only ChatOpenAI-style models expose ``extra_body``; other providers
     (anthropic, gemini, ...) are left untouched with a debug log.
+
+    When a thinking budget is injected, the instance's output cap is raised
+    above it if necessary: DashScope rejects requests where
+    ``max_completion_tokens <= thinking_budget`` (graphs hard-code 8192),
+    so budgets of 12288/24576 would otherwise 400 on medium/xhigh.
     """
     extra = build_reasoning_extra_body(level)
     if not extra:
@@ -94,3 +116,21 @@ def apply_reasoning_level(lc_model: Any, level: Optional[str]) -> None:
     merged = dict(getattr(lc_model, "extra_body", None) or {})
     merged.update(extra)
     lc_model.extra_body = merged
+
+    budget = extra.get("thinking_budget")
+    if not isinstance(budget, int):
+        return
+    fields = getattr(type(lc_model), "model_fields", {})
+    # langchain_openai honours whichever of the two aliases is set; bump both
+    # present ones so the wire parameter (max_completion_tokens) always
+    # exceeds the budget we just injected.
+    for attr in ("max_completion_tokens", "max_tokens"):
+        if attr not in fields:
+            continue
+        current = getattr(lc_model, attr, None)
+        if isinstance(current, int) and current <= budget:
+            setattr(lc_model, attr, budget + ANSWER_SLACK_TOKENS)
+            logger.debug(
+                f"Raised {attr} {current} -> {budget + ANSWER_SLACK_TOKENS} "
+                f"to fit thinking_budget {budget} (level {level!r})"
+            )

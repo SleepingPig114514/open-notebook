@@ -14,9 +14,11 @@ from api.routers._chat_shared import (
     get_session_or_404,
 )
 from open_notebook.ai.thinking import REASONING_LEVELS
+from open_notebook.config import CHAT_REQUEST_WATCHDOG_SECONDS
 from open_notebook.database.repository import ensure_record_id, repo_query
 from open_notebook.domain.notebook import ChatSession, Notebook
 from open_notebook.exceptions import (
+    ExternalServiceError,
     NotFoundError,
     OpenNotebookError,
 )
@@ -409,17 +411,26 @@ async def execute_chat(request: ExecuteChatRequest):
         # can't resolve overloaded callables on its own. The ignore is a langgraph
         # typing limitation: it accepts a partial state dict at runtime, but the
         # signature requires the full state type.
-        result = await asyncio.to_thread(
-            lambda: chat_graph.invoke(
-                input=state_values,  # type: ignore[arg-type]
-                config=RunnableConfig(
-                    configurable={
-                        "thread_id": full_session_id,
-                        "model_id": model_override,
-                        "reasoning_level": reasoning_level,
-                    }
-                ),
-            )
+        # wait_for is the last-resort watchdog: the provisioned model's own
+        # request timeout (OPEN_NOTEBOOK_LLM_TIMEOUT_SECONDS) fires first with
+        # a detailed message; this only guarantees an HTTP answer when even
+        # that fails to bound the call, so the frontend proxy never dies on
+        # an opaque socket hang up. The background thread may keep running to
+        # completion after the 502 (known: it holds the checkpoint DB briefly).
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: chat_graph.invoke(
+                    input=state_values,  # type: ignore[arg-type]
+                    config=RunnableConfig(
+                        configurable={
+                            "thread_id": full_session_id,
+                            "model_id": model_override,
+                            "reasoning_level": reasoning_level,
+                        }
+                    ),
+                )
+            ),
+            timeout=CHAT_REQUEST_WATCHDOG_SECONDS or None,
         )
 
         # Update session timestamp
@@ -435,6 +446,23 @@ async def execute_chat(request: ExecuteChatRequest):
         raise
     except OpenNotebookError:
         raise
+    except TimeoutError as e:
+        # Watchdog fired: the graph call exceeded
+        # CHAT_REQUEST_WATCHDOG_SECONDS without the model's own timeout
+        # triggering. 502 + actionable text beats the opaque proxy 500.
+        logger.error(
+            f"Chat watchdog fired for session {request.session_id} after "
+            f"{CHAT_REQUEST_WATCHDOG_SECONDS}s (model override: "
+            f"{request.model_override})"
+        )
+        raise ExternalServiceError(
+            "The AI request is still running server-side and exceeded the "
+            f"hard watchdog ({CHAT_REQUEST_WATCHDOG_SECONDS:.0f}s). The "
+            "model was likely given an oversized full-content context: "
+            "switch sources to 'insights only' or exclude them, then retry. "
+            "Note: the pending answer may still land in this session's "
+            "history after the timeout."
+        ) from e
     except Exception as e:
         # Log detailed error with context for debugging
         logger.error(
