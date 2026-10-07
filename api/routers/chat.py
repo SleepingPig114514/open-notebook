@@ -1,6 +1,7 @@
 import asyncio
 import traceback
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from langchain_core.runnables import RunnableConfig
@@ -25,7 +26,10 @@ from open_notebook.exceptions import (
 from open_notebook.graphs.chat import graph as chat_graph
 from open_notebook.utils import token_count
 from open_notebook.utils.context_builder import build_notebook_context
-from open_notebook.utils.graph_utils import get_session_message_count
+from open_notebook.utils.graph_utils import (
+    get_session_message_count,
+    invoke_chat_turn,
+)
 
 router = APIRouter()
 
@@ -400,34 +404,39 @@ async def execute_chat(request: ExecuteChatRequest):
         # Add user message to state
         from langchain_core.messages import HumanMessage
 
-        user_message = HumanMessage(content=request.message)
+        # Explicit id so a failed turn can remove it from the checkpoint.
+        user_message = HumanMessage(content=request.message, id=str(uuid4()))
         state_values["messages"].append(user_message)
 
         # Execute chat graph in a thread so the synchronous LangGraph invoke
         # (SqliteSaver checkpoints are sync) doesn't block the event loop and
         # freeze the rest of the API while the LLM responds. Mirrors the
         # get_state() calls above.
-        # The lambda pins down which `invoke` overload is used; asyncio.to_thread
-        # can't resolve overloaded callables on its own. The ignore is a langgraph
-        # typing limitation: it accepts a partial state dict at runtime, but the
-        # signature requires the full state type.
-        # wait_for is the last-resort watchdog: the provisioned model's own
-        # request timeout (OPEN_NOTEBOOK_LLM_TIMEOUT_SECONDS) fires first with
-        # a detailed message; this only guarantees an HTTP answer when even
-        # that fails to bound the call, so the frontend proxy never dies on
-        # an opaque socket hang up. The background thread may keep running to
-        # completion after the 502 (known: it holds the checkpoint DB briefly).
+        # The lambda pins down which call is used; asyncio.to_thread can't
+        # resolve overloaded callables on its own. invoke_chat_turn (upstream)
+        # also drops the question from the checkpoint when the turn fails, so
+        # a retry doesn't add it twice.
+        # wait_for is the last-resort watchdog (local customization): the
+        # provisioned model's own request timeout
+        # (OPEN_NOTEBOOK_LLM_TIMEOUT_SECONDS) fires first with a detailed
+        # message; this only guarantees an HTTP answer when even that fails
+        # to bound the call, so the frontend proxy never dies on an opaque
+        # socket hang up. The background thread may keep running to completion
+        # after the 502 (known: it holds the checkpoint DB briefly).
+        # reasoning_level is the local thinking-control extension.
         result = await asyncio.wait_for(
             asyncio.to_thread(
-                lambda: chat_graph.invoke(
-                    input=state_values,  # type: ignore[arg-type]
-                    config=RunnableConfig(
+                lambda: invoke_chat_turn(
+                    chat_graph,
+                    state_values,
+                    RunnableConfig(
                         configurable={
                             "thread_id": full_session_id,
                             "model_id": model_override,
                             "reasoning_level": reasoning_level,
                         }
                     ),
+                    user_message,
                 )
             ),
             timeout=CHAT_REQUEST_WATCHDOG_SECONDS or None,

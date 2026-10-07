@@ -1,4 +1,5 @@
 import os
+from typing import MutableMapping
 
 # ROOT DATA FOLDER
 DATA_FOLDER = "./data"
@@ -22,10 +23,16 @@ os.makedirs(PODCASTS_FOLDER, exist_ok=True)
 # Reads TIKTOKEN_CACHE_DIR from the environment so Docker can redirect the cache
 # to a path outside /data/ (which is typically volume-mounted and would hide the
 # pre-baked encoding baked into the image at build time).
-TIKTOKEN_CACHE_DIR = os.environ.get("TIKTOKEN_CACHE_DIR", "").strip() or f"{DATA_FOLDER}/tiktoken-cache"
+TIKTOKEN_CACHE_DIR = (
+    os.environ.get("TIKTOKEN_CACHE_DIR", "").strip() or f"{DATA_FOLDER}/tiktoken-cache"
+)
 os.makedirs(TIKTOKEN_CACHE_DIR, exist_ok=True)
 
-# LLM REQUEST TIMEOUT
+# LLM REQUEST TIMEOUT  (local customization; coexists with upstream's
+# ESPERANTO_LLM_TIMEOUT default below: provision.py re-applies ours on the
+# chat models after to_langchain(), so the explicit 300 s budget wins there,
+# while the esperanto default still bounds model calls outside our provision
+# path instead of esperanto's own 60 s floor.)
 # Wall-clock budget for a single provider chat call (seconds). Without it the
 # OpenAI SDK's ~600s default + automatic retries let oversized contexts hang
 # the chat endpoint until the frontend proxy dies with an opaque 500.
@@ -39,3 +46,21 @@ LLM_TIMEOUT_SECONDS = float(os.environ.get("OPEN_NOTEBOOK_LLM_TIMEOUT_SECONDS", 
 # and single-source ask get the model-level timeout above but no route-level
 # watchdog; podcasts have their own async job pipeline.
 CHAT_REQUEST_WATCHDOG_SECONDS = LLM_TIMEOUT_SECONDS + 60 if LLM_TIMEOUT_SECONDS > 0 else 0
+
+# LLM TIMEOUT
+# Since esperanto 2.28, to_langchain() enforces ESPERANTO_LLM_TIMEOUT on every
+# provider (default 60 s; before, most providers used their SDK default and
+# Ollama waited forever). 60 s cuts off long answers and slow local models, so
+# Open Notebook defaults it to 180 s. It stays below the default
+# API_CLIENT_TIMEOUT (300 s). An explicit value always wins. Both the API and
+# the worker import this module before any model is created.
+DEFAULT_LLM_TIMEOUT_SECONDS = 180
+
+
+def ensure_llm_timeout_default(environ: MutableMapping[str, str] = os.environ) -> None:
+    """Set ESPERANTO_LLM_TIMEOUT to Open Notebook's default when unset or blank."""
+    if not environ.get("ESPERANTO_LLM_TIMEOUT", "").strip():
+        environ["ESPERANTO_LLM_TIMEOUT"] = str(DEFAULT_LLM_TIMEOUT_SECONDS)
+
+
+ensure_llm_timeout_default()
