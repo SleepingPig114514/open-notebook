@@ -22,10 +22,11 @@
 |---|---|
 | 默认（跟随模型） | 不传 |
 | 关闭 | `{"enable_thinking": false}` |
-| low / medium / xhigh | `{"enable_thinking": true, "reasoning_effort": "<档位>"}` |
+| low / medium / xhigh | `{"enable_thinking": true, "thinking_budget": 4096/12288/24576}` |
 
 - qwen3.7/3.8 系列实际支持 low/medium/xhigh 三档；下拉只放模型真实支持的值，不照抄 Hermes 的 7 档抽象。
-- `thinking_budget` 未实现：与 `reasoning_effort` 互斥，需要时再加。
+- **2026-09-26 起改发显式 `thinking_budget`，勿改回 `reasoning_effort`**：百炼服务端会把 `reasoning_effort` 换算成大额思考预算（qwen3.7-flash medium → 32768），而 graphs 里写死 `max_tokens=8192`；服务端规则要求 `max_completion_tokens > thinking_budget`，直接 400 `invalid_parameter_error`（见解/聊天/Ask 全中招）。
+- `apply_reasoning_level` 现在同时兜底：注入预算后若模型实例的 `max_tokens`/`max_completion_tokens` ≤ 预算，自动抬到「预算+4096」（`ANSWER_SLACK_TOKENS`）。xhigh 预算封顶 24576（服务端默认换算会超过 flash 类模型的回答窗口）。
 - 实测（qwen3.8-flash，用户 MaaS 端点）：默认 1.1s/28 reasoning tokens；关闭 0.6s/0；low 2.2s/31。该端点 `enable_thinking=false` 真实生效（部分百炼端点是伪开关，换新端点需重测）。
 
 ## 3. 实现清单（升级 reapply 用）
